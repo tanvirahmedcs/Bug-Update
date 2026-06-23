@@ -1,182 +1,268 @@
-# Bug-Framework
-Make it easy to hunt a BUG
-# BUG — Bug Bounty Automation Framework v3.0
+# 🐛 BUG Framework v5.0
+### Professional Bug Bounty Recon & Detection Suite
 
-Aggressive recon-to-report automation. One command, full pipeline.
-
----
-
-## Install
-
-```bash
-sudo bash install.sh
-```
+> **⚡ AUTHORIZED & IN-SCOPE TARGETS ONLY — STRICTLY FOR BUG BOUNTY USE ⚡**
+>
+> Running this tool against targets without explicit written permission is illegal. The author assumes zero liability for unauthorized or illegal use.
 
 ---
 
-## Usage
+## Overview
+
+BUG Framework is a comprehensive, modular bash-based security testing suite designed for authorized bug bounty and penetration testing engagements. It automates the full recon-to-report pipeline, covering OWASP Top 10 vulnerabilities, IDOR, Broken Access Control, OAuth flaws, and more.
+
+---
+
+## Features
+
+- Full subdomain enumeration from 10+ passive sources
+- Live host probing with technology fingerprinting
+- Deep URL collection (Wayback, GAU, Katana, Hakrawler, waymore)
+- JavaScript analysis — secrets, DOM sinks, API base URLs, JWTs
+- Directory & endpoint fuzzing with 403 bypass techniques
+- WAF fingerprinting & bypass payload generation
+- API schema discovery (OpenAPI/Swagger + GraphQL introspection)
+- Automated vulnerability detection: XSS, SQLi, SSRF, LFI, CSRF, CORS
+- IDOR & Broken Access Control classification engine
+- OAuth/auth flow analysis (redirect_uri, state, PKCE, JWT alg:none)
+- Parameter mutation fuzzing (SSTI, type confusion, hidden params, NoSQLi)
+- Technology-specific checks (WordPress, Laravel, Spring Boot, Drupal)
+- HTML + Markdown report generation with manual testing guide
+- Resume capability, scope-file multi-domain scanning, proxy support
+
+---
+
+## Installation
 
 ```bash
-bug -d example.com                    # Full aggressive scan
-bug -d example.com -t 100             # 100 threads
-bug -d example.com -p                 # Passive only
-bug -d example.com -s                 # Skip tool check (faster re-run)
-bug -d example.com -c your.oast.fun   # OOB callback for SSRF/blind XSS
-bug -d example.com -o /tmp/results    # Custom output dir
+# Install all required tools in one command
+bug --install
 ```
 
-Optional API key for more subdomain sources:
+This installs Go, all Go-based tools (subfinder, httpx, nuclei, katana, dalfox, ffuf, etc.), Python tools (sqlmap, arjun, waymore, dirsearch), SecretFinder, LinkFinder, jwt_tool, GF patterns, SecLists, and nuclei templates.
+
+**Requirements:** Ubuntu/Debian Linux, `sudo` access, internet connection.
+
+---
+
+## Quick Start
+
 ```bash
-export SECTRAILS_KEY=your_key_here
+# Full scan (recommended starting point)
 bug -d example.com
+
+# Fast scan — skips slow modules
+bug -d example.com --quick
+
+# Ultra-aggressive — max threads, deep wordlists
+bug -d example.com --deep
+
+# Authenticated scan (provide session cookie)
+bug -d example.com --cookie "session=abc123"
+
+# Route through Burp proxy
+bug -d example.com --proxy http://127.0.0.1:8080
 ```
 
 ---
 
-## What It Runs (8 Phases)
+## Scan Modes
 
-### Phase 1 — Subdomains
-subfinder (recursive, all sources) → assetfinder → crt.sh → RapidDNS →
-SecurityTrails (if key set) → dnsx bruteforce → alterx permutations → amass passive
-All merged and deduplicated.
+### Full Scan Modes
 
-### Phase 2 — Live Hosts
-httpx on all subdomains, probing ports 80, 443, 8080, 8443, 8000, 8008, 8888, 3000,
-5000, 9000, 4443. Groups by status code. nmap service scan. WhatWeb fingerprinting.
+| Command | Description |
+|---|---|
+| `bug -d <domain>` | Full aggressive recon + detection (all modules) |
+| `bug -d <domain> --quick` | Fast scan — skips slow/heavy modules |
+| `bug -d <domain> --deep` | Ultra aggressive — max threads + deep wordlists |
+| `bug -d <domain> --no-exploit` | Recon + detection only, no active fuzzing |
+| `bug -d <domain> --resume` | Resume a stopped scan from last checkpoint |
 
-### Phase 3 — URL Harvesting
-Wayback Machine → GAU (Wayback + OTX + URLScan + CommonCrawl) → CommonCrawl direct →
-URLScan.io → Katana (active, JS-parsing, depth 5) → Gospider → Hakrawler
-GF pattern matching splits all URLs into: xss, sqli, lfi, ssrf, ssti, idor, rce,
-redirect, debug, interestingparams, upload, cors, aws-keys, jwt
+### Recon Modes
 
-### Phase 4 — JavaScript Analysis
-Download all JS → LinkFinder on every file → regex secret hunting →
-TruffleHog verified secrets → endpoint extraction → hardcoded IPs → internal hosts
+| Command | Description |
+|---|---|
+| `bug -d <domain> -sub` | Subdomain enumeration only |
+| `bug -d <domain> -one` | Single domain only (skip subdomain enum) |
+| `bug -d <domain> -url` | URL collection only |
+| `bug -d <domain> -we` | URL + endpoint discovery (fast combo) |
+| `bug -d <domain> -js` | JavaScript analysis only |
+| `bug -d <domain> -fuzz` | Directory bruteforce + 403 bypass |
+| `bug -d <domain> -ports` | Port scan only (nmap) |
+| `bug -scope <file>` | Scan multiple domains from a scope file |
 
-### Phase 5 — Endpoint Discovery
-FFUF dir + file fuzzing (raft-large + API wordlists + extensions) on all live hosts →
-30+ common API path probes → Arjun hidden parameter discovery
+### Detection Modes
 
-### Phase 6 — Nuclei
-Full template scan (low/medium/high/critical) + per-tag scans:
-xss, sqli, lfi, rce, ssrf, idor, ssti, auth-bypass, cors, cve, exposure,
-misconfig, takeover, default-login, weak-password, oast, graphql, jwt, api-key
+| Command | Description |
+|---|---|
+| `bug -d <domain> -vuln` | Full detection scan |
+| `bug -d <domain> -nuclei` | Nuclei only |
+| `bug -d <domain> -xss` | XSS detection (dalfox) |
+| `bug -d <domain> -sqli` | SQLi detection (sqlmap) |
+| `bug -d <domain> -ssrf` | SSRF detection |
+| `bug -d <domain> -lfi` | LFI detection |
+| `bug -d <domain> -csrf` | CSRF + CORS detection |
+| `bug -d <domain> -cors` | CORS misconfiguration only |
+| `bug -d <domain> -idor` | IDOR + BAC classification |
+| `bug -d <domain> -oauth` | OAuth/auth flow analysis |
+| `bug -d <domain> -tech` | Technology-specific checks |
+| `bug -d <domain> -waf` | WAF fingerprint + bypass profiling |
+| `bug -d <domain> -api` | API schema discovery (OpenAPI/GraphQL) |
+| `bug -d <domain> -pmf` | Parameter mutation fuzzing (SSTI/hidden/JSON) |
 
-### Phase 7 — Active Exploitation
-- **XSS** — Dalfox with blind XSS support
-- **SQLi** — sqlmap level 5, risk 3, all techniques
-- **LFI** — 13 payloads including PHP wrappers
-- **SSRF** — OOB injection + cloud metadata probes
-- **CORS** — 4 origin variants
-- **Open Redirect** — qsreplace injection
-- **SSTI** — 6 template payloads
-- **403 Bypass** — 9 headers + path tricks + method override
-- **IDOR** — target identification from params + 401 hosts
-- **JWT** — token extraction from all collected files
+### Report
 
-### Phase 8 — Report
-Full Markdown report with all findings + tailored manual testing checklist
-built from YOUR scan's discovered endpoints, 401 hosts, secrets, and confirmed vulns.
-
----
-
-## Output Structure
-
-```
-~/bug-results/example.com/
-├── 01-recon/
-│   ├── live_hosts_full.txt    httpx full output (JSON)
-│   ├── live_urls.txt          clean live URL list
-│   ├── status_200.txt
-│   ├── status_401.txt         ← IDOR/BAC targets
-│   ├── status_403.txt         ← bypass candidates
-│   ├── nmap.txt               service scan
-│   └── whatweb.txt            tech fingerprints
-├── 02-subdomains/
-│   ├── subfinder.txt
-│   ├── crtsh.txt
-│   ├── amass.txt
-│   └── all_subdomains.txt     ← merged unique
-├── 03-urls/
-│   ├── all_urls.txt
-│   ├── urls_with_params.txt
-│   ├── unique_params.txt
-│   └── gf/                    ← xss.txt sqli.txt lfi.txt etc
-├── 04-javascript/
-│   ├── js_urls.txt
-│   ├── files/                 downloaded JS
-│   ├── endpoints_from_js.txt
-│   ├── secrets_regex.txt      ← API keys, tokens
-│   ├── trufflehog_verified.txt ← verified secrets
-│   ├── hardcoded_ips.txt
-│   └── internal_hosts.txt
-├── 05-endpoints/
-│   ├── known_paths.txt
-│   ├── api_probe.txt
-│   ├── ffuf_all.txt
-│   └── arjun.txt
-├── 06-vulnerabilities/
-│   ├── xss_dalfox.txt
-│   ├── lfi_confirmed.txt
-│   ├── ssti.txt
-│   ├── cors.txt
-│   ├── open_redirect.txt
-│   ├── 403_bypass.txt
-│   ├── idor_targets.txt
-│   ├── jwt_tokens.txt
-│   ├── ssrf_hits.txt
-│   └── sqlmap/
-├── 07-nuclei/
-│   ├── nuclei_all.txt
-│   ├── nuclei_all.json
-│   ├── cves.txt
-│   ├── takeovers.txt
-│   └── tag_*.txt              per-category
-├── 08-report/
-│   └── report.md              ← full report + checklist
-└── logs/
-    ├── bug.log
-    ├── install.log
-    └── *.log
+```bash
+bug -d <domain> -report    # Regenerate HTML + Markdown report
 ```
 
 ---
 
-## Tools Auto-Installed
+## Options
 
-| Tool | Purpose |
-|------|---------|
-| subfinder | Subdomain enumeration |
-| assetfinder | Subdomain enumeration |
-| amass | Subdomain enumeration |
-| dnsx | DNS resolution + bruteforce |
-| alterx | Subdomain permutations |
-| httpx | Live host probing |
-| katana | Active web crawler |
-| waybackurls | Wayback Machine URLs |
-| gau | Multi-source URL collection |
-| gospider | Web spider |
-| hakrawler | Web crawler |
-| getJS | JS file discovery |
-| LinkFinder | JS endpoint extraction |
-| gf | Pattern-based URL filtering |
-| ffuf | Directory/file fuzzing |
-| arjun | Hidden parameter discovery |
-| nuclei | Vuln scanning |
-| dalfox | XSS scanner |
-| sqlmap | SQL injection |
-| trufflehog | Secret detection |
-| qsreplace | URL parameter replacement |
-| anew / unfurl | URL processing |
-| interactsh-client | OOB callbacks |
-| nmap | Port/service scan |
-| whatweb | Tech fingerprinting |
-| SecLists | Wordlists |
+| Option | Description |
+|---|---|
+| `--cookie <value>` | Session cookie for authenticated scans |
+| `--header <value>` | Custom header (repeatable) |
+| `--proxy <url>` | Route traffic through a proxy (e.g. Burp) |
+| `--wordlist <file>` | Custom wordlist for fuzzing |
+| `--threads <n>` | Override thread count |
+| `--rate <n>` | Override requests per second |
+| `--timeout <n>` | Override connection timeout (seconds) |
+| `--silent` | Suppress verbose output, show findings only |
+| `--no-banner` | Skip the ASCII art banner |
 
 ---
 
-## Legal
+## Module Overview
 
-Only use against targets you have explicit written permission to test.
-Unauthorized use is illegal. The framework is for authorized bug bounty and pentesting only.
+The full scan runs 20+ modules in sequence:
+
+| # | Module | What it does |
+|---|---|---|
+| 01 | Subdomain Enumeration | subfinder, crt.sh, assetfinder, amass, alterx, urlscan, HackerTarget, RapidDNS |
+| 02 | Live Host Probing | httpx with status codes, tech detection, CDN, CNAME, IP, takeover candidates |
+| 03 | URL Collection | waybackurls, gau, waymore, urlscan, katana (standard + headless), hakrawler, GF patterns |
+| 04 | JS Analysis | getJS, LinkFinder, SecretFinder, DOM sink detection, JWT/key mining, postMessage |
+| 05 | Path Discovery | ffuf, feroxbuster, API endpoint fuzzing, 403 bypass (16 techniques), Arjun |
+| 06 | Port Scan | nmap top-1000 with service detection |
+| 07 | Exposure Check | 80+ sensitive file/path checks (.env, .git, actuator, swagger, backups, etc.) |
+| 08 | Nuclei | Full + DAST + CVE + misconfig + takeover scans |
+| 09 | XSS | dalfox on GF-filtered URLs, CSP header audit |
+| 10 | SQLi | sqlmap with live URL filtering and tamper scripts |
+| 11 | SSRF | Cloud metadata payload injection, OOB detection |
+| 12 | LFI | Path traversal, PHP wrappers, log poisoning candidates |
+| 13 | CSRF | POST form token detection + PoC HTML file generation |
+| 14 | CORS | 6-variant origin probe with credential detection |
+| 15 | IDOR / BAC | Numeric ID / UUID extraction, privilege endpoint probing, method switching |
+| 16 | OAuth | redirect_uri bypass, state/PKCE checks, JWT analysis, token-in-URL detection |
+| WAF | WAF Fingerprinting | wafw00f, header signatures, payload probes, rate-limit threshold |
+| API | API Schema | OpenAPI/Swagger discovery, GraphQL introspection + batch/depth probes |
+| PMF | Param Mutation | SSTI, type confusion, hidden param fuzzing, JSON/NoSQLi mutation |
+| 17 | Classifier | Smart IDOR/BAC/OAuth/Upload/Export/Payment/Webhook classification engine |
+| 18 | Tech Checks | WordPress, Laravel, Spring Boot, Drupal-specific vulnerability checks |
+| 19 | Screenshots | gowitness for visual recon of all live hosts |
+| 20 | Report | HTML dashboard + Markdown report with manual testing guide |
+
+---
+
+## Workspace Structure
+
+All output is saved to `~/bug-bounty/<domain>/`:
+
+```
+<domain>/
+├── subdomains/          # All subdomain and live host data
+├── urls/                # Collected URLs, GF-filtered lists, parameter data
+│   └── gf/              # GF pattern outputs (xss, sqli, ssrf, lfi, redirect, idor)
+├── js/                  # JavaScript files, secrets, DOM sinks, endpoints
+│   └── downloaded/      # Downloaded JS files for offline analysis
+├── paths/               # ffuf/feroxbuster results, 403 bypass hits
+├── endpoints/           # Merged endpoint lists, interesting paths
+├── params/              # Discovered parameters, Arjun output, type buckets
+├── vulns/               # Vulnerability findings by type
+│   ├── xss/
+│   ├── sqli/
+│   ├── ssrf/
+│   ├── lfi/
+│   ├── csrf/
+│   ├── idor/
+│   ├── nuclei/
+│   └── misconfig/
+├── classified/          # Smart-classified targets for manual testing
+│   ├── idor/            # IDOR_PRIORITY.txt, IDOR_ALL.txt, sub-categories
+│   ├── bac/             # BAC_PRIORITY.txt, BAC_ALL.txt, sub-categories
+│   ├── oauth/           # OAUTH_PRIORITY.txt, OAUTH_ALL.txt
+│   ├── upload/
+│   ├── export/
+│   ├── payment/
+│   ├── webhook/
+│   ├── debug/
+│   ├── admin/
+│   └── burp_imports/    # Ready-to-import URL lists for Burp Suite
+├── screenshots/         # gowitness screenshots
+├── reports/             # report.html + report.md
+└── logs/master.log      # Full scan log
+```
+
+---
+
+## After the Scan — Recommended Workflow
+
+1. **Open the HTML report** — `xdg-open ~/bug-bounty/<domain>/reports/report.html`
+2. **Triage critical/high Nuclei findings** — highest accuracy, start here
+3. **Verify secrets in JS** — any valid key = instant critical report
+4. **IDOR with Autorize in Burp** — load `IDOR_PRIORITY.txt`, swap session cookies between two accounts
+5. **BAC** — load `BAC_PRIORITY.txt` with a low-privilege cookie via Match & Replace
+6. **OAuth** — manual: `redirect_uri`, missing state, PKCE, JWT alg:none
+7. **SSRF** — Burp Collaborator on `gf/ssrf.txt` URLs
+8. **Validate XSS** — open dalfox results in browser to confirm
+9. **CSRF PoC** — open generated HTML files while logged into the target
+10. **Import to Burp** — load `classified/burp_imports/` URL lists + `params/all_params.txt` into Param Miner
+
+---
+
+## Key Output Files
+
+| File | Contents |
+|---|---|
+| `reports/report.html` | Interactive HTML dashboard with all findings |
+| `reports/report.md` | Markdown report for submission/notes |
+| `classified/idor/IDOR_PRIORITY.txt` | Highest-priority IDOR test targets |
+| `classified/bac/BAC_PRIORITY.txt` | Highest-priority BAC test targets |
+| `classified/oauth/OAUTH_PRIORITY.txt` | OAuth endpoints and risk indicators |
+| `classified/burp_imports/` | URL lists ready for Burp Suite import |
+| `vulns/nuclei/nuclei_critical_high.txt` | Critical and high Nuclei findings |
+| `vulns/nuclei/nuclei_cves.txt` | CVE-targeted findings |
+| `vulns/nuclei/nuclei_takeover.txt` | Subdomain takeover candidates |
+| `js/secrets_found.txt` | API keys, tokens, credentials found in JS |
+| `js/aws_keys.txt` | AWS key candidates |
+| `js/dom_xss_sinks.txt` | DOM XSS sink patterns |
+| `paths/403_bypass.txt` | Confirmed 403 bypass results |
+| `vulns/misconfig/sensitive_files.txt` | Exposed sensitive files |
+| `params/all_params.txt` | All discovered parameter names |
+| `params/params_by_type.txt` | Parameters grouped by type (ID, auth, nav, injection) |
+| `urls/gf/` | GF-filtered URLs by vulnerability class |
+| `logs/master.log` | Full verbose scan log |
+
+---
+
+## Tools Used
+
+**Go:** subfinder, httpx, nuclei, katana, dnsx, alterx, naabu, waybackurls, gf, anew, qsreplace, gau, dalfox, hakrawler, ffuf, getJS, amass, assetfinder, gowitness
+
+**Python:** sqlmap, arjun, waymore, uro, dirsearch, wafw00f, SecretFinder, LinkFinder, jwt_tool
+
+**System:** nmap, curl, jq, git
+
+**Wordlists:** SecLists (raft-large, directory-list-medium, api-endpoints, burp-parameter-names), GF Patterns
+
+---
+
+## Legal Notice
+
+This tool is for **authorized security testing only**. You must have explicit written permission from the target organization before running any scan. Unauthorized use may violate computer fraud and abuse laws in your jurisdiction. The author assumes zero liability for misuse.
+
+---
+
+*BUG Framework v5.0 — IDOR · BAC · OAuth · XSS · SQLi · SSRF · LFI · CSRF · OWASP Top 10*
