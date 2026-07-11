@@ -133,7 +133,7 @@ bug -d example.com --proxy http://127.0.0.1:8080
 | `bug -d <domain> -cors` | CORS misconfiguration only |
 | `bug -d <domain> -idor` | IDOR + BAC classification |
 | `bug -d <domain> -oauth` | OAuth/auth flow analysis |
-| `bug -d <domain> -tech` | Technology-specific checks |
+| `bug -d <domain> -tech` | Technology-specific checks (includes WPProbe for WordPress) |
 | `bug -d <domain> -waf` | WAF fingerprint + bypass profiling |
 | `bug -d <domain> -api` | API schema discovery (OpenAPI/GraphQL) |
 | `bug -d <domain> -pmf` | Parameter mutation fuzzing (SSTI/hidden/JSON) |
@@ -276,6 +276,30 @@ All output is saved to `~/bug-bounty/<domain>/`:
 | `params/params_by_type.txt` | Parameters grouped by type (ID, auth, nav, injection) |
 | `urls/gf/` | GF-filtered URLs by vulnerability class |
 | `logs/master.log` | Full verbose scan log |
+
+---
+
+## WPProbe Usage
+
+### Commands that run WPProbe (Module 18 – Tech Checks)
+
+All of these will run WPProbe if WordPress is detected:
+
+| Command | Description |
+|---|---|
+| `bug -d <domain>` | Full aggressive scan (all modules) |
+| `bug -d <domain> --quick` | Fast scan (skips slow modules, still runs WPProbe) |
+| `bug -d <domain> --deep` | Ultra-aggressive scan |
+| `bug -d <domain> --one` | Single domain only (no subdomain enum) |
+| `bug -d <domain> -tech` | Technology-specific checks only (includes WPProbe) |
+
+### WPProbe Utility Commands
+
+| Command | Description |
+|---|---|
+| `bug --update-wpprobe` | Update WPProbe to the latest version |
+| `bug --update-wpprobe-db` | Update WPProbe's vulnerability database |
+| `bug --update-wpprobe-db --api-key <key>` | Update DB using Wordfence API key (optional, get one at wordfence.com) |
 
 ---
 

@@ -164,7 +164,7 @@ DETECTION MODES
   bug -d <domain> -cors             CORS only
   bug -d <domain> -idor             IDOR + BAC classification
   bug -d <domain> -oauth            OAuth/Auth flow analysis
-  bug -d <domain> -tech             Technology-specific checks
+  bug -d <domain> -tech             Technology-specific checks (includes WPProbe for WordPress)
   bug -d <domain> -waf              WAF fingerprint + bypass profiling
   bug -d <domain> -api              API schema discovery (OpenAPI/GraphQL)
   bug -d <domain> -pmf              Parameter mutation fuzzing (SSTI/hidden/JSON)
