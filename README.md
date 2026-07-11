@@ -1,4 +1,4 @@
-# 🐛 BUG Framework v5.0
+# 🐛 BUG Framework v5.0.1
 ### Professional Bug Bounty Recon & Detection Suite
 
 > **⚡ AUTHORIZED & IN-SCOPE TARGETS ONLY — STRICTLY FOR BUG BOUNTY USE ⚡**
@@ -26,7 +26,7 @@ BUG Framework is a comprehensive, modular bash-based security testing suite desi
 - IDOR & Broken Access Control classification engine
 - OAuth/auth flow analysis (redirect_uri, state, PKCE, JWT alg:none)
 - Parameter mutation fuzzing (SSTI, type confusion, hidden params, NoSQLi)
-- Technology-specific checks (WordPress, Laravel, Spring Boot, Drupal)
+- Technology-specific checks (WordPress with WPProbe, Laravel, Spring Boot, Drupal)
 - HTML + Markdown report generation with manual testing guide
 - Resume capability, scope-file multi-domain scanning, proxy support
 
@@ -35,13 +35,41 @@ BUG Framework is a comprehensive, modular bash-based security testing suite desi
 ## Installation
 
 ```bash
-# Install all required tools in one command
+# Make scripts executable
+chmod +x install.sh bug.sh
+
+# Install the 'bug' command system-wide
+sudo ./install.sh
+
+# Install all required tools
 bug --install
 ```
 
-This installs Go, all Go-based tools (subfinder, httpx, nuclei, katana, dalfox, ffuf, etc.), Python tools (sqlmap, arjun, waymore, dirsearch), SecretFinder, LinkFinder, jwt_tool, GF patterns, SecLists, and nuclei templates.
+This installs Go, all Go-based tools (subfinder, httpx, nuclei, katana, dalfox, ffuf, wpprobe, etc.), Python tools (sqlmap, arjun, waymore, dirsearch), SecretFinder, LinkFinder, jwt_tool, GF patterns, SecLists, and nuclei templates.
 
 **Requirements:** Ubuntu/Debian Linux, `sudo` access, internet connection.
+
+---
+
+## Uninstallation
+
+```bash
+# Remove bug framework binary
+sudo rm -f /usr/local/bin/bug
+
+# Remove scan workspaces (optional)
+rm -rf ~/bug-bounty
+
+# Remove installed Go tools (optional)
+rm -rf ~/go/bin/subfinder ~/go/bin/httpx ~/go/bin/nuclei ~/go/bin/katana ~/go/bin/dnsx ~/go/bin/alterx ~/go/bin/naabu ~/go/bin/waybackurls ~/go/bin/gf ~/go/bin/anew ~/go/bin/qsreplace ~/go/bin/gau ~/go/bin/dalfox ~/go/bin/hakrawler ~/go/bin/ffuf ~/go/bin/getJS ~/go/bin/amass ~/go/bin/assetfinder ~/go/bin/gowitness ~/go/bin/wpprobe
+
+# Remove Python tools (optional)
+sudo pip3 uninstall -y sqlmap arjun waymore dirsearch
+sudo rm -rf /opt/SecretFinder /opt/LinkFinder /opt/jwt_tool
+
+# Remove wordlists & templates (optional)
+rm -rf ~/wordlists ~/.gf ~/.local/nuclei-templates
+```
 
 ---
 
@@ -160,7 +188,7 @@ The full scan runs 20+ modules in sequence:
 | API | API Schema | OpenAPI/Swagger discovery, GraphQL introspection + batch/depth probes |
 | PMF | Param Mutation | SSTI, type confusion, hidden param fuzzing, JSON/NoSQLi mutation |
 | 17 | Classifier | Smart IDOR/BAC/OAuth/Upload/Export/Payment/Webhook classification engine |
-| 18 | Tech Checks | WordPress, Laravel, Spring Boot, Drupal-specific vulnerability checks |
+| 18 | Tech Checks | WordPress (WPProbe for plugin/theme/CVE detection), Laravel, Spring Boot, Drupal-specific vulnerability checks |
 | 19 | Screenshots | gowitness for visual recon of all live hosts |
 | 20 | Report | HTML dashboard + Markdown report with manual testing guide |
 
@@ -189,6 +217,7 @@ All output is saved to `~/bug-bounty/<domain>/`:
 │   ├── idor/
 │   ├── nuclei/
 │   └── misconfig/
+│       └── wordpress/   # WordPress-specific findings (including WPProbe)
 ├── classified/          # Smart-classified targets for manual testing
 │   ├── idor/            # IDOR_PRIORITY.txt, IDOR_ALL.txt, sub-categories
 │   ├── bac/             # BAC_PRIORITY.txt, BAC_ALL.txt, sub-categories
@@ -211,14 +240,15 @@ All output is saved to `~/bug-bounty/<domain>/`:
 
 1. **Open the HTML report** — `xdg-open ~/bug-bounty/<domain>/reports/report.html`
 2. **Triage critical/high Nuclei findings** — highest accuracy, start here
-3. **Verify secrets in JS** — any valid key = instant critical report
-4. **IDOR with Autorize in Burp** — load `IDOR_PRIORITY.txt`, swap session cookies between two accounts
-5. **BAC** — load `BAC_PRIORITY.txt` with a low-privilege cookie via Match & Replace
-6. **OAuth** — manual: `redirect_uri`, missing state, PKCE, JWT alg:none
-7. **SSRF** — Burp Collaborator on `gf/ssrf.txt` URLs
-8. **Validate XSS** — open dalfox results in browser to confirm
-9. **CSRF PoC** — open generated HTML files while logged into the target
-10. **Import to Burp** — load `classified/burp_imports/` URL lists + `params/all_params.txt` into Param Miner
+3. **Check WordPress findings (WPProbe)** — review `vulns/misconfig/wordpress/cves.txt` for vulnerable plugins/themes
+4. **Verify secrets in JS** — any valid key = instant critical report
+5. **IDOR with Autorize in Burp** — load `IDOR_PRIORITY.txt`, swap session cookies between two accounts
+6. **BAC** — load `BAC_PRIORITY.txt` with a low-privilege cookie via Match & Replace
+7. **OAuth** — manual: `redirect_uri`, missing state, PKCE, JWT alg:none
+8. **SSRF** — Burp Collaborator on `gf/ssrf.txt` URLs
+9. **Validate XSS** — open dalfox results in browser to confirm
+10. **CSRF PoC** — open generated HTML files while logged into the target
+11. **Import to Burp** — load `classified/burp_imports/` URL lists + `params/all_params.txt` into Param Miner
 
 ---
 
@@ -240,6 +270,8 @@ All output is saved to `~/bug-bounty/<domain>/`:
 | `js/dom_xss_sinks.txt` | DOM XSS sink patterns |
 | `paths/403_bypass.txt` | Confirmed 403 bypass results |
 | `vulns/misconfig/sensitive_files.txt` | Exposed sensitive files |
+| `vulns/misconfig/wordpress/cves.txt` | WordPress plugin/theme CVE findings from WPProbe |
+| `vulns/misconfig/wordpress/wpprobe_*.json` | Full WPProbe scan results (JSON) |
 | `params/all_params.txt` | All discovered parameter names |
 | `params/params_by_type.txt` | Parameters grouped by type (ID, auth, nav, injection) |
 | `urls/gf/` | GF-filtered URLs by vulnerability class |
@@ -249,7 +281,7 @@ All output is saved to `~/bug-bounty/<domain>/`:
 
 ## Tools Used
 
-**Go:** subfinder, httpx, nuclei, katana, dnsx, alterx, naabu, waybackurls, gf, anew, qsreplace, gau, dalfox, hakrawler, ffuf, getJS, amass, assetfinder, gowitness
+**Go:** subfinder, httpx, nuclei, katana, dnsx, alterx, naabu, waybackurls, gf, anew, qsreplace, gau, dalfox, hakrawler, ffuf, getJS, amass, assetfinder, gowitness, wpprobe
 
 **Python:** sqlmap, arjun, waymore, uro, dirsearch, wafw00f, SecretFinder, LinkFinder, jwt_tool
 
@@ -265,4 +297,4 @@ This tool is for **authorized security testing only**. You must have explicit wr
 
 ---
 
-*BUG Framework v5.0 — IDOR · BAC · OAuth · XSS · SQLi · SSRF · LFI · CSRF · OWASP Top 10*
+*BUG Framework v5.0.1 — IDOR · BAC · OAuth · XSS · SQLi · SSRF · LFI · CSRF · OWASP Top 10*
