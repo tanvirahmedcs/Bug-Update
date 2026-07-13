@@ -146,7 +146,7 @@ FULL SCAN MODES
 RECON MODES
   bug -d <domain> -sub              Subdomain enumeration only
   bug -d <domain> -one              Single domain only (no subdomain enum)
-  bug -d <domain> -url              URL collection only
+  bug -d <domain> -url              URL collection (runs WPProbe if WordPress pattern found)
   bug -d <domain> -we               URL + endpoint discovery (fast combo)
   bug -d <domain> -js               JavaScript analysis only
   bug -d <domain> -fuzz             Directory bruteforce + 403 bypass
@@ -2145,6 +2145,126 @@ mod_classify() {
 }
 
 # ══════════════════════════════════════════════════════
+# EARLY WORDPRESS SCAN (runs right after httpx)
+# ══════════════════════════════════════════════════════
+early_wp_scan() {
+    local TECH="$WORKSPACE/subdomains/tech_stack.txt"
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+    local O="$WORKSPACE/vulns/misconfig"
+    local WO="$O/wordpress"
+
+    [[ -s "$LIVE" ]] || return 0
+    mkdir -p "$WO"
+
+    local wp_detected=false
+    if grep -qi "wordpress\|wp-" "$TECH" 2>/dev/null; then
+        wp_detected=true
+        log_info "Early WP: detected via tech stack"
+    fi
+
+    if [[ "$wp_detected" == false ]] && has whatweb; then
+        local WHATWEB_OUT="$WORKSPACE/subdomains/whatweb_tech.txt"
+        head -5 "$LIVE" 2>/dev/null | whatweb --no-errors -i - 2>/dev/null > "$WHATWEB_OUT" || true
+        if grep -qi "wordpress" "$WHATWEB_OUT" 2>/dev/null; then
+            wp_detected=true
+            log_info "Early WP: detected via WhatWeb"
+        fi
+    fi
+
+    if [[ "$wp_detected" == true ]]; then
+        log_info "Running early WordPress checks..."
+        while IFS= read -r base; do
+            for path in "/wp-login.php" "/wp-admin/" "/xmlrpc.php" \
+                        "/wp-content/debug.log" "/wp-config.php.bak" "/?author=1"; do
+                local c; c=$(_curl -o /dev/null -w "%{http_code}" "${base}${path}" 2>/dev/null || echo "000")
+                [[ "$c" == "200" ]] && {
+                    echo "WP_EXPOSED: ${base}${path}" >> "$WO/findings.txt"
+                }
+            done
+        done < <(head -5 "$LIVE" 2>/dev/null)
+
+        if has wpprobe; then
+            log_info "Running early WPProbe scan..."
+            while IFS= read -r base; do
+                local safe_base=$(echo "$base" | sed 's|https\?://||g' | sed 's|/|_|g')
+                local wpprobe_args=(-u "$base" --mode stealthy --no-check-version -o "$WO/wpprobe_${safe_base}.json")
+                [[ -n "$PROXY_URL" ]] && wpprobe_args+=(--proxy "$PROXY_URL")
+                [[ -n "$SESSION_COOKIE" ]] && wpprobe_args+=(--header "Cookie: $SESSION_COOKIE")
+                for h in "${CUSTOM_HEADERS[@]:-}"; do
+                    [[ -n "$h" ]] && wpprobe_args+=(--header "$h")
+                done
+                wpprobe scan "${wpprobe_args[@]}" 2>&1 | while read -r line; do
+                    log_info "WPProbe (early): $line"
+                done
+            done < <(head -5 "$LIVE" 2>/dev/null)
+        fi
+    fi
+}
+
+# ══════════════════════════════════════════════════════
+# WPPROBE FROM KATANA URL OUTPUT (triggered in -url mode)
+# Detects WordPress patterns in katana/URL output and runs
+# WPProbe against the discovered WordPress hosts.
+# ══════════════════════════════════════════════════════
+wp_probe_from_katana() {
+    local O="$WORKSPACE/vulns/misconfig/wordpress"
+    local URLS="$WORKSPACE/urls/all_urls.txt"
+    [[ -s "$URLS" ]] || { log_warn "No URL data yet — skipping WordPress detection"; return 0; }
+    has wpprobe || { log_warn "wpprobe not installed — skipping WP detection (run: bug --update-wpprobe)"; return 0; }
+
+    log_info "Scanning katana/URL output for WordPress patterns..."
+    local wp_urls
+    wp_urls=$(grep -iE '(wp-content|wp-includes|wp-admin|wp-login|wp-json|/xmlrpc\.php|wp-activate|wp-comments|wp-cron|wp-links|wp-mail|wp-settings|wp-signup|wp-trackback|wp-.*\.php)' "$URLS" 2>/dev/null | sort -u)
+
+    if [[ -z "$wp_urls" ]]; then
+        log_ok "No WordPress pattern detected in katana/URL output"
+        return 0
+    fi
+
+    log_hit "WordPress pattern detected from katana — launching WPProbe"
+    mkdir -p "$O"
+
+    # Extract unique base URLs (scheme://host)
+    local bases
+    bases=$(echo "$wp_urls" | grep -oiE 'https?://[^/]+' | sort -u)
+
+    while IFS= read -r base; do
+        [[ -z "$base" ]] && continue
+        local safe_base=$(echo "$base" | sed 's|https\?://||g' | sed 's|/|_|g')
+        local wpprobe_json="$O/wpprobe_${safe_base}.json"
+        if [[ -f "$wpprobe_json" ]]; then
+            log_info "WPProbe results already exist for $base — skipping"
+            continue
+        fi
+        log_info "Running WPProbe on $base..."
+        local wpprobe_args=(-u "$base" --mode stealthy --no-check-version -o "$wpprobe_json")
+        [[ -n "$PROXY_URL" ]] && wpprobe_args+=(--proxy "$PROXY_URL")
+        [[ -n "$SESSION_COOKIE" ]] && wpprobe_args+=(--header "Cookie: $SESSION_COOKIE")
+        for h in "${CUSTOM_HEADERS[@]:-}"; do
+            [[ -n "$h" ]] && wpprobe_args+=(--header "$h")
+        done
+        wpprobe scan "${wpprobe_args[@]}" 2>&1 | while read -r line; do
+            log_info "WPProbe (katana): $line"
+        done
+
+        if [[ -f "$wpprobe_json" ]]; then
+            local plugin_count=$(jq '.plugins | length' "$wpprobe_json" 2>/dev/null || echo 0)
+            local theme_count=$(jq '.themes | length' "$wpprobe_json" 2>/dev/null || echo 0)
+            if [[ "$plugin_count" -gt 0 ]] || [[ "$theme_count" -gt 0 ]]; then
+                log_ok "WPProbe: $plugin_count plugin(s), $theme_count theme(s) on $base"
+                local vuln_count=$(jq '[.plugins[]? | select(.vulnerabilities | length > 0), .themes[]? | select(.vulnerabilities | length > 0)] | length' "$wpprobe_json" 2>/dev/null || echo 0)
+                if [[ "$vuln_count" -gt 0 ]]; then
+                    log_hit "WPProbe found $vuln_count vulnerable plugin/theme(s) on $base"
+                    echo "WPPROBE_VULN: $base - $vuln_count vulnerable items" >> "$O/wpprobe_vulns.txt"
+                    jq -r '.plugins[]? | .vulnerabilities[]? | "\(.cve // .id) - \(.title) - \(.severity // "unknown")"' "$wpprobe_json" 2>/dev/null >> "$O/cves.txt"
+                    jq -r '.themes[]? | .vulnerabilities[]? | "\(.cve // .id) - \(.title) - \(.severity // "unknown")"' "$wpprobe_json" 2>/dev/null >> "$O/cves.txt"
+                fi
+            fi
+        fi
+    done <<< "$bases"
+}
+
+# ══════════════════════════════════════════════════════
 # MODULE 18 — TECH-SPECIFIC CHECKS
 # ══════════════════════════════════════════════════════
 mod_tech() {
@@ -2159,9 +2279,45 @@ mod_tech() {
     local LIVE="$WORKSPACE/subdomains/live_urls.txt"
     local O="$WORKSPACE/vulns/misconfig"
 
-    # WordPress
+    # Run WhatWeb for deeper tech fingerprinting
+    if has whatweb; then
+        local WHATWEB_OUT="$WORKSPACE/subdomains/whatweb_tech.txt"
+        log_info "Running WhatWeb for deeper tech fingerprinting..."
+        head -5 "$LIVE" 2>/dev/null | whatweb --no-errors -i - 2>/dev/null > "$WHATWEB_OUT" || true
+        if [[ -s "$WHATWEB_OUT" ]]; then
+            # Check whatweb for WordPress
+            if grep -qi "wordpress" "$WHATWEB_OUT" 2>/dev/null; then
+                wp_detected=true
+                log_info "WordPress detected via WhatWeb — running WP checks..."
+            fi
+            # Append detected tech to tech_stack.txt (strip versions/brackets)
+            sed 's/^[^ ]* //' "$WHATWEB_OUT" \
+                | sed 's/^\[[^]]*\] //' \
+                | tr ',' '\n' \
+                | sed 's/\[.*\]//g' \
+                | sed 's/^[ \t]*//;s/[ \t]*$//' \
+                | sort -u >> "$TECH" 2>/dev/null || true
+        fi
+    fi
+
+    # WordPress detection (check tech stack or look for wp-content)
+    local wp_detected=false
     if grep -qi "wordpress\|wp-" "$TECH" 2>/dev/null; then
-        log_info "WordPress detected — running WP checks..."
+        wp_detected=true
+        log_info "WordPress detected via tech stack — running WP checks..."
+    else
+        # Fallback: check if any URLs have "wp-content" or check for wp-login.php
+        if grep -qi "wp-content" "$WORKSPACE/urls/all_urls.txt" 2>/dev/null; then
+            wp_detected=true
+            log_info "WordPress detected via wp-content URLs — running WP checks..."
+        fi
+    fi
+    
+    if [[ "$wp_detected" == true ]] || [[ ! -s "$TECH" ]]; then
+        # Either we detected WP, or tech_stack is empty (let's try WPProbe anyway just in case)
+        if [[ "$wp_detected" == false ]]; then
+            log_info "Tech stack is empty — trying WPProbe anyway to check for WordPress..."
+        fi
         local WO="$O/wordpress"; mkdir -p "$WO"
         while IFS= read -r base; do
             local users; users=$(_curl "${base}/wp-json/wp/v2/users" 2>/dev/null || true)
@@ -2169,51 +2325,66 @@ mod_tech() {
                 echo "WP_USER_ENUM: $base" >> "$WO/user_enum.txt"
                 echo "$users" | jq -r '.[].name' 2>/dev/null >> "$WO/usernames.txt" || true
                 log_hit "WordPress user enum: $base"
+                wp_detected=true
             }
             for path in "/wp-login.php" "/wp-admin/" "/xmlrpc.php" \
                         "/wp-content/debug.log" "/wp-config.php.bak" "/?author=1"; do
                 local c; c=$(_curl -o /dev/null -w "%{http_code}" "${base}${path}" 2>/dev/null || echo "000")
-                [[ "$c" == "200" ]] && echo "WP_EXPOSED: ${base}${path}" >> "$WO/findings.txt"
+                [[ "$c" == "200" ]] && {
+                    echo "WP_EXPOSED: ${base}${path}" >> "$WO/findings.txt"
+                    wp_detected=true
+                }
             done
-            # WPProbe scan
+            # WPProbe scan (skip if early scan already produced results)
             if has wpprobe; then
                 local safe_base=$(echo "$base" | sed 's|https\?://||g' | sed 's|/|_|g')
-                log_info "Running WPProbe on $base..."
-                local wpprobe_args=(-u "$base" --mode stealthy --no-check-version -o "$WO/wpprobe_${safe_base}.json")
-                if [[ -n "$PROXY_URL" ]]; then
-                    wpprobe_args+=(--proxy "$PROXY_URL")
+                local wpprobe_json="$WO/wpprobe_${safe_base}.json"
+                if [[ ! -f "$wpprobe_json" ]]; then
+                    log_info "Running WPProbe on $base..."
+                    local wpprobe_args=(-u "$base" --mode stealthy --no-check-version -o "$wpprobe_json")
+                    if [[ -n "$PROXY_URL" ]]; then
+                        wpprobe_args+=(--proxy "$PROXY_URL")
+                    fi
+                    if [[ -n "$SESSION_COOKIE" ]]; then
+                        wpprobe_args+=(--header "Cookie: $SESSION_COOKIE")
+                    fi
+                    for h in "${CUSTOM_HEADERS[@]:-}"; do
+                        [[ -n "$h" ]] && wpprobe_args+=(--header "$h")
+                    done
+                    wpprobe scan "${wpprobe_args[@]}" 2>&1 | while read -r line; do
+                        log_info "WPProbe: $line"
+                    done
+                else
+                    log_info "WPProbe results already exist for $base — skipping re-scan"
                 fi
-                if [[ -n "$SESSION_COOKIE" ]]; then
-                    wpprobe_args+=(--header "Cookie: $SESSION_COOKIE")
-                fi
-                for h in "${CUSTOM_HEADERS[@]:-}"; do
-                    [[ -n "$h" ]] && wpprobe_args+=(--header "$h")
-                done
-                wpprobe scan "${wpprobe_args[@]}" 2>&1 | while read -r line; do
-                    log_info "WPProbe: $line"
-                done
                 
                 # Extract findings
-                if [[ -f "$WO/wpprobe_${safe_base}.json" ]]; then
-                    # Count vulnerable plugins/themes
-                    local vuln_count=$(jq '[.plugins[]? | select(.vulnerabilities | length > 0), .themes[]? | select(.vulnerabilities | length > 0)] | length' "$WO/wpprobe_${safe_base}.json" 2>/dev/null || echo 0)
-                    
-                    if [[ "$vuln_count" -gt 0 ]]; then
-                        log_hit "WPProbe found $vuln_count vulnerable plugin/theme(s) on $base"
-                        echo "WPPROBE_VULN: $base - $vuln_count vulnerable items" >> "$WO/wpprobe_vulns.txt"
-                        # Extract CVEs
-                        jq -r '.plugins[]? | .vulnerabilities[]? | "\(.cve // .id) - \(.title) - \(.severity // "unknown")"' "$WO/wpprobe_${safe_base}.json" 2>/dev/null >> "$WO/cves.txt"
-                        jq -r '.themes[]? | .vulnerabilities[]? | "\(.cve // .id) - \(.title) - \(.severity // "unknown")"' "$WO/wpprobe_${safe_base}.json" 2>/dev/null >> "$WO/cves.txt"
+                if [[ -f "$wpprobe_json" ]]; then
+                    # Check if any plugins/themes detected at all (to confirm WordPress)
+                    local plugin_count=$(jq '.plugins | length' "$wpprobe_json" 2>/dev/null || echo 0)
+                    local theme_count=$(jq '.themes | length' "$wpprobe_json" 2>/dev/null || echo 0)
+                    if [[ "$plugin_count" -gt 0 ]] || [[ "$theme_count" -gt 0 ]]; then
+                        wp_detected=true
+                        log_ok "WPProbe: $plugin_count plugin(s), $theme_count theme(s) detected on $base"
+                        
+                        # Check for vulnerable plugins/themes
+                        local vuln_count=$(jq '[.plugins[]? | select(.vulnerabilities | length > 0), .themes[]? | select(.vulnerabilities | length > 0)] | length' "$wpprobe_json" 2>/dev/null || echo 0)
+                        if [[ "$vuln_count" -gt 0 ]]; then
+                            log_hit "WPProbe found $vuln_count vulnerable plugin/theme(s) on $base"
+                            echo "WPPROBE_VULN: $base - $vuln_count vulnerable items" >> "$WO/wpprobe_vulns.txt"
+                            # Extract CVEs
+                            jq -r '.plugins[]? | .vulnerabilities[]? | "\(.cve // .id) - \(.title) - \(.severity // "unknown")"' "$wpprobe_json" 2>/dev/null >> "$WO/cves.txt"
+                            jq -r '.themes[]? | .vulnerabilities[]? | "\(.cve // .id) - \(.title) - \(.severity // "unknown")"' "$wpprobe_json" 2>/dev/null >> "$WO/cves.txt"
+                        fi
                     fi
-                    
-                    # Log detected plugins/themes
-                    local plugin_count=$(jq '.plugins | length' "$WO/wpprobe_${safe_base}.json" 2>/dev/null || echo 0)
-                    local theme_count=$(jq '.themes | length' "$WO/wpprobe_${safe_base}.json" 2>/dev/null || echo 0)
-                    log_ok "WPProbe: $plugin_count plugin(s), $theme_count theme(s) detected on $base"
                 fi
             fi
         done < <(head -5 "$LIVE" 2>/dev/null)
-        log_ok "WordPress: $(cnt "$O/wordpress/findings.txt") findings, $(cnt "$O/wordpress/wpprobe_vulns.txt") WPProbe vulns"
+        if [[ "$wp_detected" == true ]]; then
+            log_ok "WordPress: $(cnt "$O/wordpress/findings.txt") findings, $(cnt "$O/wordpress/wpprobe_vulns.txt") WPProbe vulns"
+        else
+            log_ok "WordPress: not detected on target"
+        fi
     fi
 
     # Skip other tech checks in quick mode
@@ -3133,7 +3304,9 @@ main() {
     fi
 
     if [[ "$M_URL" == true ]]; then
-        ensure_live; run_mod urls mod_urls; exit 0
+        ensure_live; run_mod urls mod_urls
+        wp_probe_from_katana
+        exit 0
     fi
 
     if [[ "$M_WE" == true ]]; then
@@ -3238,6 +3411,7 @@ main() {
     fi
 
     run_mod httpx      mod_httpx
+    early_wp_scan
 
     [[ "$F_QUICK" == false ]] && run_mod ports mod_ports
 

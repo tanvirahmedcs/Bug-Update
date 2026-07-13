@@ -55,7 +55,7 @@ This installs Go, all Go-based tools (subfinder, httpx, nuclei, katana, dalfox, 
 
 ```bash
 # Remove bug framework binary
-sudo rm -f /usr/local/bin/bug
+sudo rm -f /usr/local/bin/bug /usr/local/bin/bug_js_dl.py /usr/local/bin/bug_active_filter.py
 
 # Remove scan workspaces (optional)
 rm -rf ~/bug-bounty

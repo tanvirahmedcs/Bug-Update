@@ -14,9 +14,13 @@ echo -e "${CYAN}Installing BUG FRAMEWORK...${NC}\n"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Copy to /usr/local/bin
-sudo cp "$SCRIPT_DIR/bug.sh" /usr/local/bin/bug
-sudo chmod +x /usr/local/bin/bug
+# Copy helper scripts to /usr/local/bin
+for helper in bug.sh bug_js_dl.py bug_active_filter.py; do
+    if [[ -f "$SCRIPT_DIR/$helper" ]]; then
+        sudo cp "$SCRIPT_DIR/$helper" /usr/local/bin/"$helper"
+        sudo chmod +x /usr/local/bin/"$helper"
+    fi
+done
 
 echo -e "${GREEN}✔ 'bug' command installed to /usr/local/bin/bug${NC}"
 echo -e "${GREEN}✔ Usage: bug -d example.com${NC}"
