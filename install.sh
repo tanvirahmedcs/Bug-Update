@@ -22,6 +22,11 @@ for helper in bug.sh bug_js_dl.py bug_active_filter.py; do
     fi
 done
 
+# Create bug command symlink
+if [[ -f "/usr/local/bin/bug.sh" ]]; then
+    sudo ln -sf /usr/local/bin/bug.sh /usr/local/bin/bug
+fi
+
 echo -e "${GREEN}✔ 'bug' command installed to /usr/local/bin/bug${NC}"
 echo -e "${GREEN}✔ Usage: bug -d example.com${NC}"
 echo ""
