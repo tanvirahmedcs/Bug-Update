@@ -11,13 +11,23 @@
 # ================================================================
 set -u
 
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
+BOLD='\033[1m'
+
 LOG="/tmp/bug_setup.log"
 : > "$LOG"
 log()  { echo "[*] $*" | tee -a "$LOG"; }
-ok()   { echo "[+] $*" | tee -a "$LOG"; }
-warn() { echo "[!] $*" | tee -a "$LOG"; }
-die()  { echo "[X] $*" | tee -a "$LOG"; exit 1; }
+ok()   { echo -e "${GREEN}[+]${NC} $*" | tee -a "$LOG"; }
+warn() { echo -e "${RED}[!]${NC} $*" | tee -a "$LOG"; }
+die()  { echo -e "${RED}[X]${NC} $*" | tee -a "$LOG"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+banner() {
+    echo -e "${BOLD}${CYAN}"
+    echo " ██████╗ ██╗   ██╗ ██████╗     ███████╗██████╗  █████╗ ███╗   ███╗███████╗██╗    ██╗ ██████╗ ██████╗ ██╗  ██╗"
+    echo -e "${NC}"
+    echo -e "${CYAN}Installing BUG FRAMEWORK...${NC}\n"
+}
 
 OS="$(uname -s)"
 SUDO=""
@@ -50,7 +60,13 @@ as_user_go() {
 }
 
 BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUG_SCRIPT="$BIN_DIR/bug"
+
+# Accept either `bug` or `bug.sh` sitting next to this installer
+BUG_SCRIPT=""
+for candidate in "$BIN_DIR/bug" "$BIN_DIR/bug.sh"; do
+    [[ -f "$candidate" ]] && { BUG_SCRIPT="$candidate"; break; }
+done
+
 section() { log "──────────────────── $* ────────────────────────"; }
 
 # ── 1. apt packages ──────────────────────────────────────────────
@@ -147,10 +163,10 @@ WL
 # ── 6. install the bug script ────────────────────────────────────
 install_bug_script() {
     section "install bug script"
-    [[ -f "$BUG_SCRIPT" ]] || die "bug script not found next to setup.sh ($BUG_SCRIPT)"
-    bash -n "$BUG_SCRIPT" || die "SYNTAX ERROR in bug — fix before installing"
+    [[ -n "$BUG_SCRIPT" && -f "$BUG_SCRIPT" ]] || die "bug script not found next to setup.sh (looked for 'bug' and 'bug.sh' in $BIN_DIR)"
+    bash -n "$BUG_SCRIPT" || die "SYNTAX ERROR in $(basename "$BUG_SCRIPT") — fix before installing"
     $SUDO install -m 755 "$BUG_SCRIPT" /usr/local/bin/bug
-    ok "installed /usr/local/bin/bug (bash -n passed)"
+    ok "'bug' command installed to /usr/local/bin/bug (bash -n passed)"
     for rc in "$REAL_HOME/.bashrc" "$REAL_HOME/.zshrc"; do
         [[ -f "$rc" ]] || continue
         grep -q 'go/bin' "$rc" 2>/dev/null \
@@ -176,6 +192,7 @@ install_macos() {
             || warn "  ✗ $t failed"
     done
     install_gf_patterns
+    [[ -n "$BUG_SCRIPT" && -f "$BUG_SCRIPT" ]] || die "bug script not found next to setup.sh (looked for 'bug' and 'bug.sh' in $BIN_DIR)"
     mkdir -p "$REAL_HOME/bin"
     BASH5="$(brew --prefix bash 2>/dev/null)/bin/bash"
     printf '#!/usr/bin/env bash\nexec "%s" "%s" "$@"\n' "$BASH5" "$BUG_SCRIPT" > "$REAL_HOME/bin/bug"
@@ -203,6 +220,7 @@ verify() {
 
 # ── main ─────────────────────────────────────────────────────────
 main() {
+    banner
     log "BUG FRAMEWORK v5.1 setup — $(date) — OS: $OS"
     case "$OS" in
         Linux)  install_apt; install_go_tools; install_pip_tools; install_gf_patterns
@@ -211,6 +229,8 @@ main() {
         *)      die "unsupported OS: $OS" ;;
     esac
     verify
-    ok "setup complete — log: $LOG — first run: bug -d example.com"
+    echo ""
+    ok "setup complete — log: $LOG"
+    echo -e "${CYAN}Run 'bug -d example.com' to start scanning${NC}"
 }
 main "$@"
