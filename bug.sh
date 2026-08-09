@@ -2206,6 +2206,7 @@ do_install() {
 # ── MAIN ───────────────────────────────────────────────────────────────
 main() {
     local mode="full"
+    local LIST_FILE="" QUIET=false VERBOSE=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -d|--domain)    DOMAIN="${2:-}"; shift 2 ;;
@@ -2224,14 +2225,14 @@ main() {
     done
 
     if [[ "$mode" == "report" ]]; then
-        [[ -z "$DOMAIN" && -n "$LIST_FILE" ]] && DOMAIN=$(head -1 "$LIST_FILE")
+        [[ -z "$DOMAIN" && -n "${LIST_FILE:-}" ]] && DOMAIN=$(head -1 "$LIST_FILE")
         [[ -z "$DOMAIN" ]] && { echo "[-] No domain (use -d)"; usage; exit 1; }
         WORKSPACE="$BASE_WORKSPACE/$DOMAIN"
         [[ -n "$WORKSPACE" ]] || true
         generate_report; exit 0
     fi
 
-    if [[ -n "$LIST_FILE" ]]; then
+    if [[ -n "${LIST_FILE:-}" ]]; then
         [[ ! -s "$LIST_FILE" ]] && { echo "[-] List file empty: $LIST_FILE"; exit 1; }
         while IFS= read -r d; do
             [[ -z "$d" ]] && continue
@@ -2300,3 +2301,5 @@ run_full_scan() {
 # bootstrap
 export PATH="$PATH:$HOME/go/bin:$(go env GOPATH 2>/dev/null)/bin"
 main "$@"
+
+
